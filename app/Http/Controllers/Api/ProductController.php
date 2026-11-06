@@ -6,14 +6,19 @@ use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Models\Favorite;
 use App\Models\Product;
+use App\Models\User;
 use App\Services\CommissionCalculator;
+use App\Services\SubscriptionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class ProductController extends Controller
 {
-    public function __construct(private readonly CommissionCalculator $commission) {}
+    public function __construct(
+        private readonly CommissionCalculator $commission,
+        private readonly SubscriptionService $subscriptions,
+    ) {}
 
     /**
      * Calcula el desglose de comisión sin crear ningún registro.
@@ -26,7 +31,11 @@ class ProductController extends Controller
             'desired_net_price' => ['nullable', 'numeric', 'min:0'],
         ]);
 
-        $breakdown = $this->commission->resolveBreakdown($validated['price'] ?? null, $validated['desired_net_price'] ?? null);
+        // Ruta pública: si viene token, el desglose usa la comisión del plan
+        // del vendedor que está publicando.
+        $breakdown = $this->commission
+            ->forSeller($request->user('sanctum'))
+            ->resolveBreakdown($validated['price'] ?? null, $validated['desired_net_price'] ?? null);
 
         if (! $breakdown) {
             abort(422, 'Debes indicar el precio de venta o la ganancia neta que deseas recibir.');
@@ -139,18 +148,32 @@ class ProductController extends Controller
             'image_url' => ['nullable', 'url'],
         ]);
 
+        if (! empty($validated['seller_id']) && $user->role !== 'admin') {
+            unset($validated['seller_id']);
+        }
+
+        $validated['seller_id'] = (int) ($validated['seller_id'] ?? $user->id);
+        $seller = $validated['seller_id'] === $user->id ? $user : User::findOrFail($validated['seller_id']);
+        $commission = $this->commission->forSeller($seller);
+
+        $validated['is_featured'] = $request->boolean('is_featured', false);
+
+        if ($validated['is_featured']) {
+            $this->subscriptions->assertCanFeatureListing($user);
+        }
+
         if ($validated['transaction_type'] === 'rent') {
             if (empty($validated['price_per_day'])) {
                 abort(422, 'Debes indicar el precio por día para productos en alquiler.');
             }
 
-            $breakdown = $this->commission->breakdown((float) $validated['price_per_day']);
+            $breakdown = $commission->breakdown((float) $validated['price_per_day']);
             $validated['price'] = $validated['price_per_day'];
             $validated['commission_rate'] = $breakdown['commission_rate'];
             $validated['net_amount'] = $breakdown['net_amount'];
             unset($validated['desired_net_price']);
         } else {
-            $breakdown = $this->commission->resolveBreakdown($validated['price'] ?? null, $validated['desired_net_price'] ?? null);
+            $breakdown = $commission->resolveBreakdown($validated['price'] ?? null, $validated['desired_net_price'] ?? null);
 
             if (! $breakdown) {
                 abort(422, 'Debes indicar el precio de venta o la ganancia neta que deseas recibir.');
@@ -162,14 +185,8 @@ class ProductController extends Controller
             $validated['net_amount'] = $breakdown['net_amount'];
         }
 
-        if (! empty($validated['seller_id']) && $user->role !== 'admin') {
-            unset($validated['seller_id']);
-        }
-
-        $validated['seller_id'] = $validated['seller_id'] ?? $user->id;
         $validated['slug'] = Str::slug($validated['title']);
         $validated['status'] = 'active';
-        $validated['is_featured'] = $request->boolean('is_featured', false);
 
         $product = DB::transaction(function () use ($validated, $user) {
             if (! empty($validated['business_id'])) {
@@ -218,6 +235,12 @@ class ProductController extends Controller
             $validated['slug'] = Str::slug($validated['title']);
         }
 
+        if (! empty($validated['is_featured']) && ! $product->is_featured) {
+            $this->subscriptions->assertCanFeatureListing($user);
+        }
+
+        $commission = $this->commission->forSeller($product->seller);
+
         $effectiveType = $validated['transaction_type'] ?? $product->transaction_type;
         $isSwitchingType = isset($validated['transaction_type']) && $validated['transaction_type'] !== $product->transaction_type;
 
@@ -227,7 +250,7 @@ class ProductController extends Controller
             }
 
             if (isset($validated['price_per_day'])) {
-                $breakdown = $this->commission->breakdown((float) $validated['price_per_day']);
+                $breakdown = $commission->breakdown((float) $validated['price_per_day']);
                 $validated['price'] = $validated['price_per_day'];
                 $validated['commission_rate'] = $breakdown['commission_rate'];
                 $validated['net_amount'] = $breakdown['net_amount'];
@@ -238,7 +261,7 @@ class ProductController extends Controller
                 abort(422, 'Debes indicar el precio de venta o la ganancia neta al cambiar este producto a venta.');
             }
 
-            $breakdown = $this->commission->resolveBreakdown($validated['price'] ?? null, $validated['desired_net_price'] ?? null);
+            $breakdown = $commission->resolveBreakdown($validated['price'] ?? null, $validated['desired_net_price'] ?? null);
 
             if ($breakdown) {
                 $validated['price'] = $breakdown['gross_price'];

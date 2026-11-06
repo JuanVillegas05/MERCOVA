@@ -43,13 +43,22 @@
         </div>
     </section>
 
-    <section class="max-w-6xl mx-auto px-4 sm:px-6 py-16">
-        <div class="bg-slate-900 rounded-2xl px-8 py-10 sm:py-14 text-center text-white">
-            <h2 class="text-2xl sm:text-3xl font-bold">¿Tienes un emprendimiento?</h2>
-            <p class="mt-3 text-slate-300 max-w-xl mx-auto">
-                Regístralo en Mercova, elige una membresía y empieza a ofrecer tus productos y servicios a toda la comunidad.
+    <section class="bg-slate-900 border-t border-slate-800">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 py-16 sm:py-20">
+            <div class="text-center mb-12">
+                <span class="text-sm font-semibold uppercase tracking-wide text-emerald-400">Para emprendimientos</span>
+                <h2 class="text-2xl sm:text-3xl font-bold text-white mt-2">Elige el plan que impulsa tu negocio</h2>
+                <p class="mt-3 text-slate-300 max-w-2xl mx-auto">
+                    Desde un primer paso gratuito hasta marketing y domicilios prioritarios. Crece a tu ritmo dentro de Mercova.
+                </p>
+            </div>
+            <div id="home-plans" class="grid grid-cols-1 sm:grid-cols-3 gap-6 items-stretch">
+                <p class="text-slate-400 col-span-full text-center py-8">Cargando planes...</p>
+            </div>
+            <p class="text-center text-slate-400 text-sm mt-8">
+                ¿Ya tienes claro tu plan?
+                <a href="{{ url('/emprendimientos') }}" class="font-semibold text-emerald-400 hover:underline">Registra tu emprendimiento y suscríbete</a>
             </p>
-            <a href="{{ url('/emprendimientos') }}" class="mt-6 inline-block px-6 py-3 rounded-lg bg-emerald-500 font-semibold hover:bg-emerald-400 transition">Conocer membresías</a>
         </div>
     </section>
 @endsection

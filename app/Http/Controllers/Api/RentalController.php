@@ -100,7 +100,7 @@ class RentalController extends Controller
             }
 
             $days = Carbon::parse($validated['start_date'])->diffInDays(Carbon::parse($validated['end_date'])) + 1;
-            $breakdown = $this->commission->breakdown(round((float) $product->price_per_day * $days, 2));
+            $breakdown = $this->commission->forSeller($product->seller)->breakdown(round((float) $product->price_per_day * $days, 2));
 
             return Rental::create([
                 'product_id' => $product->id,

@@ -23,12 +23,58 @@
                 <option value="month">Este mes</option>
                 <option value="all">Todo el tiempo</option>
             </select>
+            <button type="button" data-dashboard-export="pdf" class="dashboard-export-btn inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 hover:border-red-400 hover:text-red-600 transition disabled:opacity-60 disabled:cursor-not-allowed">
+                <svg class="export-spinner hidden h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>
+                <span>PDF</span>
+            </button>
+            <button type="button" data-dashboard-export="excel" class="dashboard-export-btn inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 hover:border-emerald-400 hover:text-emerald-600 transition disabled:opacity-60 disabled:cursor-not-allowed">
+                <svg class="export-spinner hidden h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>
+                <span>Excel</span>
+            </button>
             <a href="{{ url('/') }}" target="_blank" rel="noopener" class="inline-flex items-center gap-1.5 bg-slate-900 text-white text-sm font-semibold rounded-lg px-4 py-2 hover:bg-slate-800 transition">
                 Ver sitio web
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                 </svg>
             </a>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-xl border border-slate-200 p-5 mb-6">
+        <div class="flex flex-wrap items-end gap-3">
+            <div>
+                <h2 class="font-bold text-slate-800 text-sm">Exportar métricas</h2>
+                <p class="text-xs text-slate-400">Resumen, transacciones y usuarios en un solo archivo.</p>
+            </div>
+
+            <div class="flex items-end gap-3 ml-auto">
+                <div>
+                    <label class="block text-xs font-medium text-slate-500 mb-1">Rango</label>
+                    <select id="export-range" class="rounded-lg border-slate-300 text-sm focus:border-emerald-500 focus:ring-emerald-500">
+                        <option value="this_month">Este mes</option>
+                        <option value="last_quarter">Último trimestre</option>
+                        <option value="custom">Rango personalizado</option>
+                    </select>
+                </div>
+                <div id="export-custom-range" class="hidden flex items-end gap-2">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">Desde</label>
+                        <input type="date" id="export-from" class="rounded-lg border-slate-300 text-sm focus:border-emerald-500 focus:ring-emerald-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">Hasta</label>
+                        <input type="date" id="export-to" class="rounded-lg border-slate-300 text-sm focus:border-emerald-500 focus:ring-emerald-500">
+                    </div>
+                </div>
+                <button type="button" data-export-format="excel" class="export-btn inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 transition disabled:opacity-60 disabled:cursor-not-allowed">
+                    <svg class="export-spinner hidden h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>
+                    <span>Exportar a Excel</span>
+                </button>
+                <button type="button" data-export-format="pdf" class="export-btn inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700 transition disabled:opacity-60 disabled:cursor-not-allowed">
+                    <svg class="export-spinner hidden h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>
+                    <span>Exportar a PDF</span>
+                </button>
+            </div>
         </div>
     </div>
 

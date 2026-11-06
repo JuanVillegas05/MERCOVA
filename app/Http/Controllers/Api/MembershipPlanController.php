@@ -25,7 +25,10 @@ class MembershipPlanController extends Controller
     public function adminIndex(Request $request)
     {
         return response()->json([
-            'data' => MembershipPlan::query()->withCount('businesses')->orderBy('price')->get(),
+            'data' => MembershipPlan::query()
+                ->withCount(['businesses', 'subscriptions' => fn ($q) => $q->current()])
+                ->orderBy('price')
+                ->get(),
         ]);
     }
 
@@ -40,12 +43,14 @@ class MembershipPlanController extends Controller
             'features' => ['nullable', 'array'],
             'features.*' => ['string', 'max:255'],
             'is_active' => ['sometimes', 'boolean'],
+            ...$this->subscriptionCapabilityRules(),
         ]);
 
         $validated['slug'] = $this->uniqueSlug($validated['name']);
         $validated['is_active'] = $request->boolean('is_active', true);
 
         $plan = MembershipPlan::create($validated);
+        $this->keepSingleDefaultPlan($plan);
 
         return response()->json([
             'message' => 'Plan creado con éxito.',
@@ -64,6 +69,7 @@ class MembershipPlanController extends Controller
             'features' => ['sometimes', 'nullable', 'array'],
             'features.*' => ['string', 'max:255'],
             'is_active' => ['sometimes', 'boolean'],
+            ...$this->subscriptionCapabilityRules(),
         ]);
 
         if (isset($validated['name'])) {
@@ -71,6 +77,7 @@ class MembershipPlanController extends Controller
         }
 
         $membershipPlan->update($validated);
+        $this->keepSingleDefaultPlan($membershipPlan);
 
         return response()->json([
             'message' => 'Plan actualizado correctamente.',
@@ -87,6 +94,38 @@ class MembershipPlanController extends Controller
         return response()->json([
             'message' => 'Plan eliminado correctamente.',
         ]);
+    }
+
+    /**
+     * Reglas de las capacidades que hace cumplir el backend. Los límites en
+     * null significan "ilimitado"; commission_rate en null, "comisión general".
+     *
+     * @return array<string, array<int, string>>
+     */
+    private function subscriptionCapabilityRules(): array
+    {
+        return [
+            'tier' => ['sometimes', 'integer', 'min:0', 'max:255'],
+            'monthly_listing_limit' => ['sometimes', 'nullable', 'integer', 'min:0'],
+            'monthly_request_limit' => ['sometimes', 'nullable', 'integer', 'min:0'],
+            'featured_listings_limit' => ['sometimes', 'nullable', 'integer', 'min:0'],
+            'commission_rate' => ['sometimes', 'nullable', 'numeric', 'min:0', 'max:1'],
+            'has_verified_badge' => ['sometimes', 'boolean'],
+            'has_advanced_stats' => ['sometimes', 'boolean'],
+            'has_realtime_analytics' => ['sometimes', 'boolean'],
+            'is_default' => ['sometimes', 'boolean'],
+        ];
+    }
+
+    /**
+     * Solo un plan puede ser el gratuito por defecto: al marcar uno, los
+     * demás dejan de serlo.
+     */
+    private function keepSingleDefaultPlan(MembershipPlan $plan): void
+    {
+        if ($plan->is_default) {
+            MembershipPlan::query()->whereKeyNot($plan->id)->update(['is_default' => false]);
+        }
     }
 
     private function uniqueSlug(string $name, ?int $ignoreId = null): string

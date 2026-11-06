@@ -2,11 +2,31 @@
 
 namespace App\Services;
 
+use App\Models\User;
+
 class CommissionCalculator
 {
+    /**
+     * $rateOverride solo lo usa forSeller(): el contenedor siempre construye
+     * esta clase sin él, con la comisión general de config/mercova.php.
+     */
+    public function __construct(private readonly ?float $rateOverride = null) {}
+
     public function rate(): float
     {
-        return (float) config('mercova.commission.rate', 0.06);
+        return $this->rateOverride ?? (float) config('mercova.commission.rate', 0.06);
+    }
+
+    /**
+     * Calculadora con la comisión que le corresponde a $seller según su
+     * plan (p. ej. Élite cobra menos). Si su plan no define comisión propia,
+     * o no hay vendedor, devuelve la calculadora con la comisión general.
+     */
+    public function forSeller(?User $seller): self
+    {
+        $planRate = $seller?->currentPlan()?->commission_rate;
+
+        return $planRate === null ? $this : new self((float) $planRate);
     }
 
     /**

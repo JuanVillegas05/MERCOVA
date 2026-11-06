@@ -1,24 +1,37 @@
-import { setToken, clearToken } from '../lib/api.js';
+import { apiFetch, setToken, clearToken } from '../lib/api.js';
 import { fetchCurrentUser } from '../lib/auth.js';
 import { toast } from '../lib/toast.js';
 
 export async function initSocialCallback() {
     const params = new URLSearchParams(window.location.search);
-    const token = params.get('token');
+    const code = params.get('code');
 
-    if (!token) {
-        window.location.href = '/login';
+    if (!code) {
+        window.location.href = '/login?social_error=1';
         return;
     }
 
-    setToken(token);
+    // Quita el código de la barra de direcciones/historial antes de canjearlo.
+    window.history.replaceState(null, '', window.location.pathname);
+
+    try {
+        const data = await apiFetch('/auth/social/exchange', {
+            method: 'POST',
+            body: JSON.stringify({ code }),
+        });
+        setToken(data.token);
+    } catch (error) {
+        clearToken();
+        window.location.href = '/login?social_error=1';
+        return;
+    }
 
     const user = await fetchCurrentUser();
 
     if (!user) {
         clearToken();
         toast('No pudimos iniciar sesión. Intenta de nuevo.', 'error');
-        window.location.href = '/login';
+        window.location.href = '/login?social_error=1';
         return;
     }
 

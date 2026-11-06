@@ -20,7 +20,9 @@ Route::view('/pago/retorno', 'pages.payment-return')->name('payment.return');
 Route::get('/auth/{provider}/redirect', [SocialAuthController::class, 'redirect'])
     ->whereIn('provider', ['google', 'apple'])
     ->name('social.redirect');
-Route::get('/auth/{provider}/callback', [SocialAuthController::class, 'callback'])
+// GET (Google) y POST (Apple usa response_mode=form_post). El POST de Apple
+// está excluido de CSRF en bootstrap/app.php: lo protege el nonce firmado.
+Route::match(['get', 'post'], '/auth/{provider}/callback', [SocialAuthController::class, 'callback'])
     ->whereIn('provider', ['google', 'apple'])
     ->name('social.callback');
 Route::view('/auth/callback', 'pages.social-callback')->name('social.landing');

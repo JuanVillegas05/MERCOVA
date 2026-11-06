@@ -62,6 +62,12 @@ class UserNotificationTest extends TestCase
             'quantity' => 1,
         ])->json('data.id');
 
+        // "pending" solo puede pasar a "processing" (pago confirmado) o
+        // "cancelled"; no puede saltar directo a "completed" sin pagar.
+        $this->actingAs($admin, 'sanctum')->patchJson("/api/admin/orders/{$orderId}/status", [
+            'status' => 'processing',
+        ])->assertOk();
+
         $this->actingAs($admin, 'sanctum')->patchJson("/api/admin/orders/{$orderId}/status", [
             'status' => 'completed',
         ])->assertOk();

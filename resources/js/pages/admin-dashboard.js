@@ -1,8 +1,9 @@
-import { apiFetch } from '../lib/api.js';
+import { apiFetch, getToken } from '../lib/api.js';
 import { money } from '../lib/money.js';
 import { requireAdmin } from '../lib/auth.js';
 import { initNotificationBell } from '../lib/notifications.js';
 import { escapeHtml } from '../lib/escape.js';
+import { toast } from '../lib/toast.js';
 
 const LIVE_POLL_MS = 15000;
 
@@ -280,6 +281,124 @@ function bindRangeSelector() {
     return select;
 }
 
+/**
+ * Exporta exactamente lo que está en pantalla: usa el mismo rango
+ * (hoy/semana/mes/todo) que #dashboard-range tiene seleccionado en ese
+ * momento, no un rango aparte.
+ */
+function bindDashboardExportButtons(rangeSelect) {
+    document.querySelectorAll('.dashboard-export-btn').forEach((button) => {
+        button.addEventListener('click', async () => {
+            if (button.disabled) return;
+
+            const format = button.dataset.dashboardExport;
+            const range = rangeSelect?.value || 'today';
+
+            setExportButtonLoading(button, true);
+            try {
+                await downloadExport(`/admin/dashboard/export/${format}?range=${range}`, `mercova-resumen.${format === 'excel' ? 'xlsx' : format}`);
+                toast('Archivo descargado.', 'success');
+            } catch (error) {
+                toast(error.message, 'error');
+            } finally {
+                setExportButtonLoading(button, false);
+            }
+        });
+    });
+}
+
+/**
+ * apiFetch() siempre intenta parsear JSON, así que no sirve para descargar
+ * un archivo binario (xlsx/pdf): esta función hace un fetch aparte, igual de
+ * autenticado, que lee la respuesta como blob y la "descarga" creando un
+ * <a> temporal — el mismo truco de siempre para forzar una descarga desde
+ * JS sin que el navegador solo la abra en una pestaña nueva.
+ */
+async function downloadExport(path, fallbackFilename) {
+    const response = await fetch(`/api${path}`, {
+        headers: {
+            Accept: 'application/octet-stream',
+            Authorization: `Bearer ${getToken()}`,
+        },
+    });
+
+    if (!response.ok) {
+        let message = 'No pudimos generar el archivo.';
+        try {
+            message = (await response.json())?.message || message;
+        } catch (error) {
+            // La respuesta de error no era JSON; nos quedamos con el mensaje genérico.
+        }
+        throw new Error(message);
+    }
+
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
+    const filename = filenameMatch ? filenameMatch[1] : fallbackFilename;
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+}
+
+function exportQueryParams() {
+    const range = document.getElementById('export-range')?.value || 'this_month';
+    const params = new URLSearchParams({ range });
+
+    if (range === 'custom') {
+        const from = document.getElementById('export-from')?.value;
+        const to = document.getElementById('export-to')?.value;
+
+        if (!from || !to) {
+            throw new Error('Elige las dos fechas del rango personalizado.');
+        }
+
+        params.set('from', from);
+        params.set('to', to);
+    }
+
+    return params;
+}
+
+function setExportButtonLoading(button, isLoading) {
+    button.disabled = isLoading;
+    button.querySelector('.export-spinner')?.classList.toggle('hidden', !isLoading);
+}
+
+function bindExportButtons() {
+    const rangeSelect = document.getElementById('export-range');
+    const customRange = document.getElementById('export-custom-range');
+
+    rangeSelect?.addEventListener('change', () => {
+        customRange.classList.toggle('hidden', rangeSelect.value !== 'custom');
+    });
+
+    document.querySelectorAll('.export-btn').forEach((button) => {
+        button.addEventListener('click', async () => {
+            if (button.disabled) return;
+
+            const format = button.dataset.exportFormat;
+
+            setExportButtonLoading(button, true);
+            try {
+                const params = exportQueryParams();
+                await downloadExport(`/admin/metrics/export/${format}?${params}`, `mercova-metricas.${format === 'excel' ? 'xlsx' : format}`);
+                toast('Archivo descargado.', 'success');
+            } catch (error) {
+                toast(error.message, 'error');
+            } finally {
+                setExportButtonLoading(button, false);
+            }
+        });
+    });
+}
+
 export async function initAdminDashboard() {
     const statsEl = document.getElementById('admin-stats');
     if (!statsEl) return;
@@ -287,7 +406,9 @@ export async function initAdminDashboard() {
 
     initNotificationBell();
     bindTabs();
+    bindExportButtons();
     const rangeSelect = bindRangeSelector();
+    bindDashboardExportButtons(rangeSelect);
 
     await loadSummary(rangeSelect?.value || 'today');
 

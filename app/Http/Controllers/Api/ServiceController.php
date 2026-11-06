@@ -6,7 +6,9 @@ use App\Http\Controllers\Controller;
 use App\Models\Booking;
 use App\Models\Business;
 use App\Models\Service;
+use App\Models\User;
 use App\Services\CommissionCalculator;
+use App\Services\SubscriptionService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -14,7 +16,10 @@ use Illuminate\Support\Str;
 
 class ServiceController extends Controller
 {
-    public function __construct(private readonly CommissionCalculator $commission) {}
+    public function __construct(
+        private readonly CommissionCalculator $commission,
+        private readonly SubscriptionService $subscriptions,
+    ) {}
 
     public function index(Request $request)
     {
@@ -61,7 +66,22 @@ class ServiceController extends Controller
             'image_url' => ['nullable', 'url'],
         ]);
 
-        $breakdown = $this->commission->resolveBreakdown($validated['price'] ?? null, $validated['desired_net_price'] ?? null);
+        if (! empty($validated['seller_id']) && $user->role !== 'admin') {
+            unset($validated['seller_id']);
+        }
+
+        $validated['seller_id'] = (int) ($validated['seller_id'] ?? $user->id);
+        $seller = $validated['seller_id'] === $user->id ? $user : User::findOrFail($validated['seller_id']);
+
+        $validated['is_featured'] = $request->boolean('is_featured', false);
+
+        if ($validated['is_featured']) {
+            $this->subscriptions->assertCanFeatureListing($user);
+        }
+
+        $breakdown = $this->commission
+            ->forSeller($seller)
+            ->resolveBreakdown($validated['price'] ?? null, $validated['desired_net_price'] ?? null);
 
         if (! $breakdown) {
             abort(422, 'Debes indicar el precio del servicio o la ganancia neta que deseas recibir.');
@@ -71,15 +91,8 @@ class ServiceController extends Controller
         $validated['price'] = $breakdown['gross_price'];
         $validated['commission_rate'] = $breakdown['commission_rate'];
         $validated['net_amount'] = $breakdown['net_amount'];
-
-        if (! empty($validated['seller_id']) && $user->role !== 'admin') {
-            unset($validated['seller_id']);
-        }
-
-        $validated['seller_id'] = $validated['seller_id'] ?? $user->id;
         $validated['slug'] = Str::slug($validated['title']);
         $validated['status'] = 'active';
-        $validated['is_featured'] = $request->boolean('is_featured', false);
 
         $service = DB::transaction(function () use ($validated, $user) {
             if (! empty($validated['business_id'])) {
@@ -123,7 +136,13 @@ class ServiceController extends Controller
             $validated['slug'] = Str::slug($validated['title']);
         }
 
-        $breakdown = $this->commission->resolveBreakdown($validated['price'] ?? null, $validated['desired_net_price'] ?? null);
+        if (! empty($validated['is_featured']) && ! $service->is_featured) {
+            $this->subscriptions->assertCanFeatureListing($user);
+        }
+
+        $breakdown = $this->commission
+            ->forSeller($service->seller)
+            ->resolveBreakdown($validated['price'] ?? null, $validated['desired_net_price'] ?? null);
 
         if ($breakdown) {
             $validated['price'] = $breakdown['gross_price'];
@@ -189,7 +208,7 @@ class ServiceController extends Controller
             }
 
             $total = round((float) $lockedService->price * $validated['guest_count'], 2);
-            $breakdown = $this->commission->breakdown($total);
+            $breakdown = $this->commission->forSeller($lockedService->seller)->breakdown($total);
 
             return Booking::create([
                 'service_id' => $lockedService->id,
