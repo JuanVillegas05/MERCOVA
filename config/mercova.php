@@ -63,20 +63,37 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Pasarela de pagos (Wompi)
+    | Pasarela de pagos (Mercado Pago)
     |--------------------------------------------------------------------------
     |
-    | Credenciales de https://comercios.wompi.co. Sin ellas, el checkout
-    | con pago real queda deshabilitado pero el resto de la app funciona.
+    | Credenciales de https://www.mercadopago.com.co/developers/panel/app.
+    | Sin public key + access token, el checkout con pago real queda
+    | deshabilitado pero el resto de la app funciona. El modo pruebas o
+    | producción lo deciden las propias credenciales (de prueba o reales).
+    |
+    | webhook_secret: "clave secreta" de Webhooks en el panel. Con ella se
+    | valida el header x-signature de cada notificación.
     |
     */
-    'wompi' => [
-        'public_key' => env('WOMPI_PUBLIC_KEY'),
-        'private_key' => env('WOMPI_PRIVATE_KEY'),
-        'integrity_secret' => env('WOMPI_INTEGRITY_SECRET'),
-        'events_secret' => env('WOMPI_EVENTS_SECRET'),
-        'sandbox' => env('WOMPI_SANDBOX', true),
+    'mercadopago' => [
+        'public_key' => env('MERCADOPAGO_PUBLIC_KEY'),
+        'access_token' => env('MERCADOPAGO_ACCESS_TOKEN'),
+        'webhook_secret' => env('MERCADOPAGO_WEBHOOK_SECRET'),
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Expiración de pedidos sin pagar
+    |--------------------------------------------------------------------------
+    |
+    | Un pedido queda "pending" con el stock ya descontado desde que se crea.
+    | Si el comprador nunca llega a pagar (cierra el checkout de Mercado Pago sin
+    | terminar, por ejemplo) o su último intento fue rechazado y no reintenta, el
+    | comando "orders:cancel-stale" (programado cada hora) cancela esos
+    | pedidos tras esta cantidad de horas y repone su stock.
+    |
+    */
+    'order_expiry_hours' => (int) env('MERCOVA_ORDER_EXPIRY_HOURS', 48),
 
     /*
     |--------------------------------------------------------------------------

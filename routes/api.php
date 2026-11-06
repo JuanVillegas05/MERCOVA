@@ -1,29 +1,40 @@
 <?php
 
 use App\Http\Controllers\Api\AdminController;
+use App\Http\Controllers\Api\AdminDashboardExportController;
+use App\Http\Controllers\Api\AdminMetricsExportController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BusinessController;
 use App\Http\Controllers\Api\CartController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\FavoriteController;
 use App\Http\Controllers\Api\MembershipPlanController;
+use App\Http\Controllers\Api\MercadoPagoWebhookController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\OrderController;
+use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\RentalController;
 use App\Http\Controllers\Api\ReviewController;
 use App\Http\Controllers\Api\ServiceController;
+use App\Http\Controllers\Api\SubscriptionCheckoutController;
+use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\UploadController;
-use App\Http\Controllers\Api\WompiWebhookController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', fn () => ['status' => 'ok']);
 Route::get('/payment-methods', fn () => response()->json(['data' => config('mercova.payment_methods')]));
+// Qué botones de login social mostrar: { google: bool, apple: bool }.
+Route::get('/auth/providers', fn () => response()->json(['data' => config('mercova.social_login')]));
 
-// Pública (sin auth:sanctum a propósito): Wompi no manda un token nuestro,
-// firma el payload con WOMPI_EVENTS_SECRET y esa firma es la que se valida
-// dentro del controlador. Ver App\Services\WompiService::verifyEventSignature().
-Route::post('/webhooks/wompi', [WompiWebhookController::class, 'handle'])->name('webhooks.wompi');
+// Pública (sin auth:sanctum a propósito): Mercado Pago no manda un token
+// nuestro. Firma cada aviso (header x-signature, MERCADOPAGO_WEBHOOK_SECRET) y
+// el estado del pago se consulta a su API. Ver MercadoPagoWebhookController.
+Route::post('/webhooks/mercadopago', [MercadoPagoWebhookController::class, 'handle'])
+    ->middleware('throttle:120,1')
+    ->name('webhooks.mercadopago');
+// Public key + bancos de PSE para pintar el checkout (nada secreto).
+Route::get('/payments/config', [PaymentController::class, 'config']);
 
 Route::get('/categories', [CategoryController::class, 'index']);
 
@@ -39,11 +50,17 @@ Route::get('/membership-plans', [MembershipPlanController::class, 'index']);
 Route::get('/businesses', [BusinessController::class, 'index']);
 Route::get('/businesses/{business:slug}', [BusinessController::class, 'show']);
 
-Route::post('/auth/check-identifier', [AuthController::class, 'checkIdentifier']);
-Route::post('/register', [AuthController::class, 'register']);
-Route::post('/login', [AuthController::class, 'login']);
-Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
-Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+// 10 intentos por minuto por IP: suficiente para un usuario real que se
+// equivoca de contraseña varias veces, pero corta la fuerza bruta y el
+// "credential stuffing" contra login/registro/recuperación de contraseña.
+Route::middleware('throttle:10,1')->group(function () {
+    Route::post('/auth/check-identifier', [AuthController::class, 'checkIdentifier']);
+    Route::post('/register', [AuthController::class, 'register']);
+    Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/auth/social/exchange', [AuthController::class, 'socialExchange']);
+    Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
+    Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+});
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
@@ -51,18 +68,31 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/me/password', [AuthController::class, 'updatePassword']);
     Route::post('/logout', [AuthController::class, 'logout']);
 
+    Route::get('/me/subscription', [SubscriptionController::class, 'show']);
+    Route::put('/me/subscription', [SubscriptionController::class, 'update']);
+
+    // Planes de pago: el checkout solo crea el intento y la URL de Mercado
+    // Pago; el plan se activa cuando llega el webhook (/api/webhooks/mercadopago).
+    Route::get('/subscriptions/checkout/preview', [SubscriptionCheckoutController::class, 'preview']);
+    Route::post('/subscriptions/checkout', [SubscriptionCheckoutController::class, 'store'])->middleware('throttle:10,1');
+    Route::get('/subscriptions/payments', [SubscriptionCheckoutController::class, 'index']);
+    Route::get('/subscriptions/payments/{subscriptionPayment}', [SubscriptionCheckoutController::class, 'show']);
+
+    // plan.quota:* descuenta del cupo mensual del plan del usuario (el
+    // gratuito tiene límite; Pro/Élite pueden ser ilimitados). Ver
+    // App\Http\Middleware\EnforcePlanQuota.
     Route::get('/my-products', [ProductController::class, 'mine']);
-    Route::post('/products', [ProductController::class, 'store']);
+    Route::post('/products', [ProductController::class, 'store'])->middleware('plan.quota:listings');
     Route::put('/products/{product}', [ProductController::class, 'update']);
     Route::delete('/products/{product}', [ProductController::class, 'destroy']);
 
     Route::post('/uploads/image', [UploadController::class, 'store']);
     Route::post('/uploads', [UploadController::class, 'store']);
 
-    Route::post('/services', [ServiceController::class, 'store']);
+    Route::post('/services', [ServiceController::class, 'store'])->middleware('plan.quota:listings');
     Route::put('/services/{service}', [ServiceController::class, 'update']);
     Route::delete('/services/{service}', [ServiceController::class, 'destroy']);
-    Route::post('/services/{service}/book', [ServiceController::class, 'book']);
+    Route::post('/services/{service}/book', [ServiceController::class, 'book'])->middleware('plan.quota:requests');
 
     Route::post('/reviews', [ReviewController::class, 'store']);
 
@@ -81,7 +111,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/rentals', [RentalController::class, 'index']);
     Route::get('/rentals/owned', [RentalController::class, 'owned']);
-    Route::post('/rentals', [RentalController::class, 'store']);
+    Route::post('/rentals', [RentalController::class, 'store'])->middleware('plan.quota:requests');
     Route::patch('/rentals/{rental}/status', [RentalController::class, 'updateStatus']);
 
     Route::get('/orders', [OrderController::class, 'index']);
@@ -90,6 +120,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/checkout', [OrderController::class, 'checkout']);
     Route::get('/orders/{order}', [OrderController::class, 'show']);
     Route::get('/orders/{order}/payment', [OrderController::class, 'paymentUrl']);
+    Route::post('/orders/{order}/cancel', [OrderController::class, 'cancel']);
+
+    // Checkout propio con Mercado Pago (tarjeta tokenizada o PSE) para
+    // cualquier referencia de pedido, carrito o plan del usuario.
+    Route::post('/payments', [PaymentController::class, 'store'])->middleware('throttle:10,1');
+    Route::get('/payments/{paymentId}', [PaymentController::class, 'show'])->whereNumber('paymentId');
 
     Route::get('/my-business', [BusinessController::class, 'me']);
     Route::post('/businesses', [BusinessController::class, 'store']);
@@ -100,10 +136,16 @@ Route::middleware('auth:sanctum')->group(function () {
     // ningún controlador necesita volver a comprobar el rol a mano.
     Route::middleware('admin')->prefix('admin')->group(function () {
         Route::get('/dashboard', [AdminController::class, 'dashboard']);
+        Route::get('/dashboard/export/pdf', [AdminDashboardExportController::class, 'pdf']);
+        Route::get('/dashboard/export/excel', [AdminDashboardExportController::class, 'excel']);
+
+        Route::get('/metrics/export/excel', [AdminMetricsExportController::class, 'excel']);
+        Route::get('/metrics/export/pdf', [AdminMetricsExportController::class, 'pdf']);
 
         Route::get('/users', [AdminController::class, 'users']);
         Route::get('/users/{user}', [AdminController::class, 'showUser']);
         Route::patch('/users/{user}/status', [AdminController::class, 'updateUserStatus']);
+        Route::put('/users/{user}/subscription', [SubscriptionController::class, 'adminUpdate']);
 
         Route::get('/products', [AdminController::class, 'products']);
         Route::get('/services', [AdminController::class, 'services']);

@@ -7,37 +7,59 @@ use App\Models\Cart;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
+use App\Models\User;
 use App\Services\CommissionCalculator;
-use App\Services\WompiService;
+use App\Services\MercadoPagoPaymentService;
+use App\Services\MercadoPagoService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Throwable;
 
 class OrderController extends Controller
 {
     public function __construct(
         private readonly CommissionCalculator $commission,
-        private readonly WompiService $wompi,
+        private readonly MercadoPagoService $mercadoPago,
+        private readonly MercadoPagoPaymentService $payments,
     ) {}
 
     /**
-     * URL de Wompi a la que debe redirigirse al comprador para pagar un
-     * pedido (o grupo de pedidos de un mismo checkout, que comparten
-     * `payment_reference` y por tanto se cobran una sola vez). Null si la
-     * pasarela no está configurada (sin llaves en .env) o el pedido ya fue
-     * pagado.
+     * URL de Checkout Pro (Mercado Pago) a la que debe redirigirse al
+     * comprador para pagar un pedido (o grupo de pedidos de un mismo
+     * checkout, que comparten `payment_reference` y se cobran una sola vez
+     * por el total de todos). Null si la pasarela no está configurada, el
+     * pedido ya no se puede pagar o Mercado Pago no respondió.
+     *
+     * El frontend también puede cobrar esa misma referencia con su propio
+     * formulario de tarjeta/PSE: ver PaymentController.
      */
-    private function paymentUrlFor(Order $order, float $amount): ?string
+    private function paymentUrlFor(Order $order): ?string
     {
-        if (! $this->wompi->enabled() || ! $order->payment_reference || $order->payment_status !== 'pending') {
+        if (! $this->mercadoPago->enabled() || ! $order->payment_reference) {
             return null;
         }
 
-        return $this->wompi->checkoutUrl(
-            reference: $order->payment_reference,
-            amount: $amount,
-            redirectUrl: route('payment.return'),
-        );
+        $payable = $this->payments->findPayable($order->buyer, $order->payment_reference);
+
+        if ($payable === null) {
+            return null;
+        }
+
+        try {
+            return $this->mercadoPago->createPreference(
+                reference: $payable['reference'],
+                title: $payable['description'],
+                amount: $payable['amount'],
+                returnUrl: route('payment.return'),
+                payerEmail: $order->buyer->email,
+            );
+        } catch (Throwable $e) {
+            // El pedido sigue pendiente: GET /orders/{id}/payment reintenta.
+            report($e);
+
+            return null;
+        }
     }
 
     public function index(Request $request)
@@ -80,14 +102,14 @@ class OrderController extends Controller
 
         return response()->json([
             'data' => $order,
-            'payment_url' => $this->paymentUrlFor($order, (float) $order->total),
+            'payment_url' => $this->paymentUrlFor($order),
         ]);
     }
 
     /**
-     * Permite reintentar el pago de un pedido que sigue en
-     * `payment_status: pending` (p. ej. el comprador cerró el widget de
-     * Wompi sin terminar, o el link expiró).
+     * Permite reintentar el pago de un pedido que sigue abierto (p. ej. el
+     * comprador cerró Checkout Pro sin terminar, o su tarjeta fue rechazada
+     * y quiere usar otra).
      */
     public function paymentUrl(Request $request, Order $order)
     {
@@ -95,15 +117,56 @@ class OrderController extends Controller
             abort(403, 'No tienes permisos para pagar este pedido.');
         }
 
-        $url = $this->paymentUrlFor($order, (float) $order->total);
+        if (! $this->mercadoPago->enabled()) {
+            abort(422, 'La pasarela de pagos no está configurada todavía.');
+        }
+
+        if (! $order->payment_reference || $this->payments->findPayable($order->buyer, $order->payment_reference) === null) {
+            abort(422, 'Este pedido ya fue pagado o ya no se puede pagar.');
+        }
+
+        $url = $this->paymentUrlFor($order);
 
         if (! $url) {
-            abort(422, $order->payment_status !== 'pending'
-                ? 'Este pedido ya fue pagado o el pago fue rechazado definitivamente.'
-                : 'La pasarela de pagos no está configurada todavía.');
+            abort(503, 'No pudimos conectar con Mercado Pago. Intenta de nuevo en unos minutos.');
         }
 
         return response()->json(['payment_url' => $url]);
+    }
+
+    /**
+     * Cancelación del comprador para un pedido que todavía no fue pagado.
+     * Repone el stock al instante en vez de dejarlo bloqueado hasta que
+     * expire solo. Un pedido ya pagado no se puede cancelar aquí: requiere
+     * reembolso manual por soporte desde el panel de Mercado Pago.
+     */
+    public function cancel(Request $request, Order $order)
+    {
+        if ($request->user()->role !== 'admin' && $order->buyer_id !== $request->user()->id) {
+            abort(403, 'No tienes permisos para cancelar este pedido.');
+        }
+
+        $order = DB::transaction(function () use ($order) {
+            $order = Order::query()->lockForUpdate()->findOrFail($order->id);
+
+            if (! in_array($order->status, ['pending', 'processing'], true)) {
+                abort(422, "No se puede cancelar un pedido en estado \"{$order->status}\".");
+            }
+
+            if ($order->payment_status === 'approved') {
+                abort(422, 'Este pedido ya fue pagado. Contacta a soporte para gestionar la cancelación y el reembolso.');
+            }
+
+            $order->update(['status' => 'cancelled']);
+            $order->restoreProductStock();
+
+            return $order;
+        });
+
+        return response()->json([
+            'message' => 'Pedido cancelado correctamente.',
+            'data' => $order->fresh(['buyer', 'seller', 'items.product']),
+        ]);
     }
 
     public function store(Request $request)
@@ -129,7 +192,7 @@ class OrderController extends Controller
             }
 
             $total = round((float) $product->price * $validated['quantity'], 2);
-            $breakdown = $this->commission->breakdown($total);
+            $breakdown = $this->commission->forSeller($product->seller)->breakdown($total);
 
             $order = Order::create([
                 'buyer_id' => $request->user()->id,
@@ -139,7 +202,7 @@ class OrderController extends Controller
                 'commission_amount' => $breakdown['commission_amount'],
                 'net_amount' => $breakdown['net_amount'],
                 'payment_method' => $validated['payment_method'] ?? 'debit_card',
-                'payment_reference' => $this->wompi->generateReference('ORDER'),
+                'payment_reference' => $this->mercadoPago->generateReference('ORDER'),
                 'payment_status' => 'pending',
                 'transaction_type' => $product->transaction_type,
                 'notes' => $validated['notes'] ?? null,
@@ -167,7 +230,7 @@ class OrderController extends Controller
         return response()->json([
             'message' => 'Compra realizada correctamente.',
             'data' => $order,
-            'payment_url' => $this->paymentUrlFor($order, (float) $order->total),
+            'payment_url' => $this->paymentUrlFor($order),
         ], 201);
     }
 
@@ -219,14 +282,16 @@ class OrderController extends Controller
             }
 
             // Una sola referencia para todos los pedidos de este checkout: a
-            // Wompi se le cobra una sola vez por el total del carrito, aunque
+            // Mercado Pago se le cobra una sola vez por el total del carrito, aunque
             // internamente se reparta en un pedido por vendedor. El webhook
             // busca por esta referencia y marca todos los pedidos a la vez.
-            $paymentReference = $this->wompi->generateReference('CART');
+            $paymentReference = $this->mercadoPago->generateReference('CART');
 
             $orders = $cart->items
                 ->groupBy(fn ($item) => $products->get($item->product_id)->seller_id)
                 ->map(function ($items, $sellerId) use ($validated, $request, $products, $paymentReference) {
+                    $sellerCommission = $this->commission->forSeller(User::find($sellerId));
+
                     $total = round($items->sum(fn ($item) => $products->get($item->product_id)->price * $item->quantity), 2);
 
                     $order = Order::create([
@@ -252,7 +317,7 @@ class OrderController extends Controller
                     foreach ($items as $item) {
                         $product = $products->get($item->product_id);
                         $itemTotal = round((float) $product->price * $item->quantity, 2);
-                        $itemBreakdown = $this->commission->breakdown($itemTotal);
+                        $itemBreakdown = $sellerCommission->breakdown($itemTotal);
                         $commissionAmount += $itemBreakdown['commission_amount'];
                         $netAmount += $itemBreakdown['net_amount'];
 
@@ -285,16 +350,8 @@ class OrderController extends Controller
             return $orders;
         });
 
-        $paymentReference = $orders->first()?->payment_reference;
-        $totalAmount = (float) $orders->sum('total');
-
-        $paymentUrl = ($paymentReference && $this->wompi->enabled())
-            ? $this->wompi->checkoutUrl(
-                reference: $paymentReference,
-                amount: $totalAmount,
-                redirectUrl: route('payment.return'),
-            )
-            : null;
+        // La URL cobra el total de todo el carrito (referencia compartida).
+        $paymentUrl = $orders->isNotEmpty() ? $this->paymentUrlFor($orders->first()) : null;
 
         return response()->json([
             'message' => 'Compra realizada correctamente.',

@@ -85,4 +85,20 @@ class Order extends Model
     {
         return $this->hasMany(OrderItem::class);
     }
+
+    /**
+     * Repone el stock de los productos de este pedido. Se usa al cancelarlo
+     * (por el comprador, un admin, o un pago rechazado/anulado por la pasarela)
+     * para no dejar stock consumido por una compra que nunca se completó.
+     * `increment()` genera un UPDATE atómico por fila, así que no necesita
+     * lockForUpdate propio.
+     */
+    public function restoreProductStock(): void
+    {
+        foreach ($this->items()->where('type', 'product')->get() as $item) {
+            if ($item->product_id) {
+                Product::query()->where('id', $item->product_id)->increment('stock', $item->quantity);
+            }
+        }
+    }
 }

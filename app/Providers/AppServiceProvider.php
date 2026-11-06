@@ -2,7 +2,7 @@
 
 namespace App\Providers;
 
-use App\Services\WompiService;
+use App\Services\MercadoPagoService;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use SocialiteProviders\Apple\Provider as AppleProvider;
@@ -15,7 +15,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        $this->app->singleton(WompiService::class, fn () => WompiService::make());
+        $this->app->singleton(MercadoPagoService::class, fn () => MercadoPagoService::make());
     }
 
     /**
