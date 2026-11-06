@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\SocialLoginCodes;
+use App\Services\SubscriptionService;
 use Illuminate\Auth\Events\PasswordReset;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -13,21 +15,21 @@ use Illuminate\Validation\Rule;
 
 class AuthController extends Controller
 {
+    public function __construct(private readonly SubscriptionService $subscriptions) {}
+
+    /**
+     * No confirma si el correo existe o no (eso permitiría enumerar cuentas
+     * registradas): solo valida el formato y responde siempre igual.
+     */
     public function checkIdentifier(Request $request)
     {
-        $validated = $request->validate([
-            'identifier' => ['required', 'string'],
+        $request->validate([
+            'identifier' => ['required', 'string', 'email'],
         ]);
 
-        $user = User::where('email', $validated['identifier'])->first();
-
-        if (! $user) {
-            return response()->json([
-                'message' => 'No encontramos una cuenta con ese correo.',
-            ], 404);
-        }
-
-        return response()->json(['exists' => true]);
+        return response()->json([
+            'message' => 'Si el correo es válido, podrás continuar con el inicio de sesión o el registro.',
+        ]);
     }
 
     public function register(Request $request)
@@ -49,7 +51,10 @@ class AuthController extends Controller
         ]);
 
         $user->syncRoleFromAdminEmailList();
-        $user->sendWelcomeNotification();
+        // Todo usuario nuevo arranca en el plan gratuito; mejora después
+        // desde PUT /api/me/subscription.
+        $this->subscriptions->subscribeToDefaultPlan($user);
+        $user->sendWelcomeEmail();
 
         $token = $user->createToken('mercova')->plainTextToken;
 
@@ -57,6 +62,7 @@ class AuthController extends Controller
             'message' => 'Usuario registrado con éxito.',
             'token' => $token,
             'user' => $user,
+            'subscription' => $this->subscriptions->summaryFor($user),
         ], 201);
     }
 
@@ -90,6 +96,40 @@ class AuthController extends Controller
             'message' => 'Inicio de sesión correcto.',
             'token' => $token,
             'user' => $user,
+            'subscription' => $this->subscriptions->summaryFor($user),
+        ]);
+    }
+
+    /**
+     * Último paso del login con Google/Apple: canjea el código de un solo
+     * uso con el que el callback redirigió al frontend por un token Sanctum.
+     * Responde igual que /api/login.
+     */
+    public function socialExchange(Request $request, SocialLoginCodes $loginCodes)
+    {
+        $validated = $request->validate([
+            'code' => ['required', 'string', 'size:64'],
+        ]);
+
+        $user = $loginCodes->redeem($validated['code']);
+
+        if (! $user) {
+            return response()->json([
+                'message' => 'El enlace de inicio de sesión no es válido o expiró. Intenta de nuevo.',
+            ], 422);
+        }
+
+        if (! $user->is_active) {
+            return response()->json([
+                'message' => 'Tu cuenta ha sido desactivada. Contacta a un administrador.',
+            ], 403);
+        }
+
+        return response()->json([
+            'message' => 'Inicio de sesión correcto.',
+            'token' => $user->createToken('mercova')->plainTextToken,
+            'user' => $user,
+            'subscription' => $this->subscriptions->summaryFor($user),
         ]);
     }
 
@@ -97,6 +137,7 @@ class AuthController extends Controller
     {
         return response()->json([
             'user' => $request->user()->load(['products', 'services', 'orders.items.product', 'bookings']),
+            'subscription' => $this->subscriptions->summaryFor($request->user()),
         ]);
     }
 

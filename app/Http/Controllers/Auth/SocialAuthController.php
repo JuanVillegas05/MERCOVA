@@ -4,39 +4,58 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\FrontendRedirect;
+use App\Services\SocialLoginCodes;
+use App\Services\SubscriptionService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cookie;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use Laravel\Socialite\Contracts\Provider;
 use Laravel\Socialite\Facades\Socialite;
+use Symfony\Component\HttpFoundation\Cookie as SymfonyCookie;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Login con Google/Apple (Socialite). Flujo "stateful" normal de OAuth
- * (sesión + cookie, no el flujo "Bearer token" del resto de la API):
- * redirect() manda al comprador a Google/Apple, callback() recibe la
- * respuesta, crea/vincula la cuenta y entrega un token Sanctum igual que
- * /api/login, para que el frontend lo guarde en localStorage de la misma
- * forma que con correo/contraseña.
+ * Login con Google/Apple (Socialite).
+ *
+ * 1. GET /auth/{provider}/redirect[?redirect_uri=<url del frontend>] manda
+ *    al usuario a Google/Apple.
+ * 2. El proveedor vuelve a /auth/{provider}/callback (Google: GET; Apple:
+ *    POST cross-site, "form_post"), donde se crea o vincula la cuenta.
+ * 3. Se redirige al frontend con ?code=<código de un solo uso> (nunca el
+ *    token en la URL) y el frontend lo canjea en POST /api/auth/social/exchange
+ *    por el token Sanctum, igual que /api/login.
+ *
+ * Por qué no se usa la sesión: el POST de Apple llega desde otro sitio y la
+ * cookie de sesión (SameSite=lax) no viaja en él. Por eso Apple corre en
+ * modo stateless con el nonce en una cookie cifrada propia del proveedor, y
+ * el redirect_uri del frontend también viaja en una cookie cifrada.
  */
 class SocialAuthController extends Controller
 {
     private const PROVIDERS = ['google', 'apple'];
+
+    private const REDIRECT_COOKIE = 'mercova_social_redirect';
+
+    public function __construct(
+        private readonly SubscriptionService $subscriptions,
+        private readonly FrontendRedirect $frontendRedirect,
+        private readonly SocialLoginCodes $loginCodes,
+    ) {}
 
     public function redirect(Request $request, string $provider): RedirectResponse
     {
         $this->ensureProviderIsSupported($provider);
         $this->ensureProviderIsConfigured($provider);
 
-        $redirectUri = $this->sanitizeRedirectUri($request->query('redirect_uri'));
+        $response = $this->driver($provider)->redirect();
+        $redirectUri = $this->frontendRedirect->allowed($request->query('redirect_uri'));
 
-        if ($redirectUri) {
-            $request->session()->put('social_redirect_uri', $redirectUri);
-        } else {
-            $request->session()->forget('social_redirect_uri');
-        }
-
-        return Socialite::driver($provider)->redirect();
+        return $response->withCookie(
+            $redirectUri ? $this->redirectCookie($request, $redirectUri) : Cookie::forget(self::REDIRECT_COOKIE)
+        );
     }
 
     public function callback(Request $request, string $provider): RedirectResponse
@@ -44,25 +63,46 @@ class SocialAuthController extends Controller
         $this->ensureProviderIsSupported($provider);
         $this->ensureProviderIsConfigured($provider);
 
+        $redirectUri = $this->frontendRedirect->allowed($request->cookie(self::REDIRECT_COOKIE));
+
         try {
-            $socialUser = Socialite::driver($provider)->user();
+            $socialUser = $this->driver($provider)->user();
         } catch (\Throwable $e) {
             report($e);
 
-            return redirect()->route('login', ['social_error' => 1]);
+            return $this->failed($redirectUri);
         }
 
         if (! $socialUser->getEmail()) {
-            // Pasa sobre todo con Apple si el usuario no autoriza compartir
-            // el correo real: sin correo no podemos crear ni vincular cuenta.
-            return redirect()->route('login', ['social_error' => 1]);
+            // Sin correo no podemos crear ni vincular cuenta (pasa si el
+            // usuario no autoriza compartirlo).
+            return $this->failed($redirectUri);
         }
 
-        $user = User::query()
+        $linkedUser = User::query()
             ->where('oauth_provider', $provider)
             ->where('oauth_provider_id', $socialUser->getId())
-            ->first()
-            ?? User::query()->where('email', $socialUser->getEmail())->first();
+            ->first();
+
+        $existingByEmail = $linkedUser ? null : User::query()->where('email', $socialUser->getEmail())->first();
+
+        // Vincular automáticamente una cuenta social a una cuenta existente
+        // por solo coincidir el email, sin probar que el dueño del email es
+        // quien está iniciando sesión, permitiría un account takeover si el
+        // proveedor dejara registrar/usar un correo sin verificarlo. Google y
+        // Apple exponen esa confirmación como "email_verified" en el usuario;
+        // si no viene en true, no se vincula: la persona debe entrar con su
+        // contraseña y vincular la cuenta social desde su perfil.
+        if ($existingByEmail && ! $this->providerConfirmsEmail($socialUser)) {
+            return $this->failed($redirectUri);
+        }
+
+        $user = $linkedUser ?? $existingByEmail;
+
+        // Una cuenta desactivada por un admin no se toca (ni se vincula).
+        if ($user && ! $user->is_active) {
+            return $this->failed($redirectUri);
+        }
 
         $isNewUser = ! $user;
 
@@ -91,25 +131,81 @@ class SocialAuthController extends Controller
 
         $user->syncRoleFromAdminEmailList();
 
-        if (! $user->is_active) {
-            return redirect()->route('login', ['social_error' => 1]);
-        }
-
         if ($isNewUser) {
-            $user->sendWelcomeNotification();
+            $this->subscriptions->subscribeToDefaultPlan($user);
+            $user->sendWelcomeEmail();
         }
 
-        $token = $user->createToken('mercova')->plainTextToken;
+        $code = $this->loginCodes->issue($user);
 
-        $redirectUri = $request->session()->pull('social_redirect_uri');
+        $target = $redirectUri
+            ? $this->appendQuery($redirectUri, ['code' => $code])
+            : route('social.landing', ['code' => $code]);
 
-        if ($redirectUri) {
-            $separator = str_contains($redirectUri, '?') ? '&' : '?';
+        return redirect($target)->withCookie(Cookie::forget(self::REDIRECT_COOKIE));
+    }
 
-            return redirect($redirectUri.$separator.'token='.$token);
-        }
+    /**
+     * Apple siempre stateless + nonce en cookie (ver docblock de la clase).
+     */
+    private function driver(string $provider): Provider
+    {
+        $driver = Socialite::driver($provider);
 
-        return redirect()->route('social.landing', ['token' => $token]);
+        return $provider === 'apple' ? $driver->stateless()->cookieNonce() : $driver;
+    }
+
+    /**
+     * Error de login: de vuelta al frontend externo (?error=social_login_failed)
+     * si vino de ahí, o a la página de login propia.
+     */
+    private function failed(?string $redirectUri): RedirectResponse
+    {
+        $target = $redirectUri
+            ? $this->appendQuery($redirectUri, ['error' => 'social_login_failed'])
+            : route('login', ['social_error' => 1]);
+
+        return redirect($target)->withCookie(Cookie::forget(self::REDIRECT_COOKIE));
+    }
+
+    /**
+     * Cookie cifrada por EncryptCookies (no se puede falsificar). En HTTPS
+     * es SameSite=None para sobrevivir al POST cross-site de Apple; en HTTP
+     * local queda en Lax (suficiente para el GET de Google).
+     */
+    private function redirectCookie(Request $request, string $redirectUri): SymfonyCookie
+    {
+        $secure = $request->isSecure();
+
+        return Cookie::make(
+            self::REDIRECT_COOKIE,
+            $redirectUri,
+            minutes: 10,
+            secure: $secure,
+            httpOnly: true,
+            sameSite: $secure ? 'none' : 'lax',
+        );
+    }
+
+    /**
+     * @param  array<string, string>  $params
+     */
+    private function appendQuery(string $url, array $params): string
+    {
+        return $url.(str_contains($url, '?') ? '&' : '?').http_build_query($params);
+    }
+
+    /**
+     * Google y Apple traen "email_verified" en los datos crudos del usuario
+     * (Apple lo trae siempre en el id_token; Google, en la respuesta de su
+     * API). Solo se confía en ese valor para vincular una cuenta social a
+     * una cuenta existente por coincidencia de email.
+     */
+    private function providerConfirmsEmail(\Laravel\Socialite\Contracts\User $socialUser): bool
+    {
+        $raw = method_exists($socialUser, 'getRaw') ? $socialUser->getRaw() : [];
+
+        return filter_var($raw['email_verified'] ?? false, FILTER_VALIDATE_BOOLEAN);
     }
 
     private function ensureProviderIsSupported(string $provider): void
@@ -124,29 +220,5 @@ class SocialAuthController extends Controller
         if (! config("mercova.social_login.{$provider}")) {
             abort(Response::HTTP_NOT_FOUND, "El login con {$provider} no está configurado.");
         }
-    }
-
-    /**
-     * Solo se acepta `redirect_uri` si su dominio coincide exactamente con
-     * MERCOVA_FRONTEND_URL (el frontend externo del equipo). Cualquier otra
-     * cosa se ignora para no abrir un "open redirect" hacia un dominio
-     * arbitrario con un token de sesión válido en la URL.
-     */
-    private function sanitizeRedirectUri(?string $uri): ?string
-    {
-        if (! $uri) {
-            return null;
-        }
-
-        $allowed = config('mercova.frontend_url');
-
-        if (! $allowed) {
-            return null;
-        }
-
-        $allowedOrigin = parse_url($allowed, PHP_URL_SCHEME).'://'.parse_url($allowed, PHP_URL_HOST);
-        $origin = parse_url($uri, PHP_URL_SCHEME).'://'.parse_url($uri, PHP_URL_HOST);
-
-        return $origin === $allowedOrigin ? $uri : null;
     }
 }

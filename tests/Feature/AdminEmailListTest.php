@@ -2,11 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Mail\WelcomeUserMail;
 use App\Models\User;
-use App\Notifications\WelcomeNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Config;
-use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Mail;
 use Tests\TestCase;
 
 class AdminEmailListTest extends TestCase
@@ -56,9 +56,9 @@ class AdminEmailListTest extends TestCase
         $this->assertSame('admin', $user->fresh()->role);
     }
 
-    public function test_registration_sends_the_welcome_notification(): void
+    public function test_registration_queues_the_welcome_email(): void
     {
-        Notification::fake();
+        Mail::fake();
 
         $this->postJson('/api/register', [
             'name' => 'Nuevo Usuario',
@@ -68,6 +68,7 @@ class AdminEmailListTest extends TestCase
         ])->assertStatus(201);
 
         $user = User::where('email', 'nuevo@mercova.test')->first();
-        Notification::assertSentTo($user, WelcomeNotification::class);
+        Mail::assertQueued(WelcomeUserMail::class, fn (WelcomeUserMail $mail) => $mail->hasTo('nuevo@mercova.test') && $mail->user->is($user));
+        Mail::assertNothingSent();
     }
 }

@@ -3,14 +3,19 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
-use App\Notifications\WelcomeNotification;
+use App\Mail\WelcomeUserMail;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\Mail;
 use Laravel\Sanctum\HasApiTokens;
+use Throwable;
 
 #[Fillable(['name', 'email', 'password', 'role', 'phone', 'bio', 'avatar_url', 'is_verified', 'is_active', 'oauth_provider', 'oauth_provider_id'])]
 #[Hidden(['password', 'remember_token'])]
@@ -83,6 +88,48 @@ class User extends Authenticatable
         return $this->hasMany(Favorite::class);
     }
 
+    /**
+     * Historial completo de suscripciones (incluye las canceladas/vencidas).
+     *
+     * @return HasMany<Subscription, $this>
+     */
+    public function subscriptions(): HasMany
+    {
+        return $this->hasMany(Subscription::class);
+    }
+
+    /**
+     * @return HasMany<SubscriptionPayment, $this>
+     */
+    public function subscriptionPayments(): HasMany
+    {
+        return $this->hasMany(SubscriptionPayment::class);
+    }
+
+    /**
+     * La suscripción vigente más reciente (activa y sin vencer), si hay.
+     *
+     * @return HasOne<Subscription, $this>
+     */
+    public function activeSubscription(): HasOne
+    {
+        return $this->hasOne(Subscription::class)->ofMany(
+            ['id' => 'max'],
+            fn (Builder $query) => $query->current(),
+        );
+    }
+
+    /**
+     * Plan con el que se evalúan los permisos y límites del usuario: el de
+     * su suscripción vigente o, si no tiene (cuenta antigua, o su plan pago
+     * venció), el plan gratuito por defecto. Null solo si el catálogo de
+     * planes no está sembrado, y en ese caso no se aplican límites.
+     */
+    public function currentPlan(): ?MembershipPlan
+    {
+        return $this->activeSubscription?->plan ?? MembershipPlan::defaultPlan();
+    }
+
     public function isSellerOrAdmin(): bool
     {
         return in_array($this->role, ['seller', 'admin'], true);
@@ -106,15 +153,16 @@ class User extends Authenticatable
     }
 
     /**
-     * Envía el correo de bienvenida sin dejar que un fallo del proveedor de
-     * correo (p. ej. restricciones de cuenta de prueba de Resend) tumbe el
-     * registro del usuario, que ya quedó creado en base de datos.
+     * Encola el correo de bienvenida (WelcomeUserMail implementa
+     * ShouldQueue): el SMTP de Brevo se usa desde el worker, no durante el
+     * registro. Un fallo al encolar se reporta sin tumbar el registro del
+     * usuario, que ya quedó creado en base de datos.
      */
-    public function sendWelcomeNotification(): void
+    public function sendWelcomeEmail(): void
     {
         try {
-            $this->notify(new WelcomeNotification);
-        } catch (\Throwable $e) {
+            Mail::to($this->email)->send(new WelcomeUserMail($this));
+        } catch (Throwable $e) {
             report($e);
         }
     }
