@@ -12,6 +12,7 @@ use App\Models\Rental;
 use App\Models\Service;
 use App\Models\User;
 use App\Services\DashboardSnapshotService;
+use App\Services\UserAccountDeletion;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -91,6 +92,31 @@ class AdminController extends Controller
             'message' => $validated['is_active'] ? 'Usuario activado.' : 'Usuario desactivado.',
             'data' => $user->fresh(),
         ]);
+    }
+
+    /**
+     * Elimina una cuenta: revoca sus tokens al instante, libera su correo y
+     * conserva los pedidos/reseñas de otros usuarios (ver UserAccountDeletion).
+     * 422 si es admin o tiene compromisos en curso que deben cerrarse antes.
+     */
+    public function destroyUser(Request $request, User $user, UserAccountDeletion $deletion)
+    {
+        $blockingReason = $deletion->blockingReason($user);
+
+        if ($blockingReason !== null) {
+            abort(422, $blockingReason);
+        }
+
+        $deletion->delete($user);
+
+        // Sin el correo original: sus datos personales se acaban de anonimizar.
+        AdminNotification::record(
+            'user.deleted',
+            'Cuenta eliminada',
+            "La cuenta #{$user->id} fue eliminada por {$request->user()->email}.",
+        );
+
+        return response()->json(['message' => 'Usuario eliminado correctamente']);
     }
 
     public function products(Request $request)

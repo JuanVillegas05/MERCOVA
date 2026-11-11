@@ -88,6 +88,6 @@ class Rental extends Model
 
     public function renter()
     {
-        return $this->belongsTo(User::class, 'renter_id');
+        return $this->belongsTo(User::class, 'renter_id')->withTrashed();
     }
 }
