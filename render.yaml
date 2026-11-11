@@ -1,13 +1,3 @@
-# Blueprint de Render para Mercova: API web + worker de colas + cron.
-# Los tres usan la misma imagen (Dockerfile); solo cambia el comando.
-#
-# Secretos (sync: false): Render los pide UNA vez, al crear el Blueprint,
-# en el servicio web. El worker y el cron los leen de ahí con fromService
-# (los grupos de entorno no admiten sync: false).
-#
-# APP_KEY: genera el valor con `php artisan key:generate --show` (debe
-# empezar por "base64:"). No uses generateValue: no agrega ese prefijo.
-
 envVarGroups:
   - name: mercova-config
     envVars:
@@ -32,7 +22,7 @@ envVarGroups:
       - key: CACHE_STORE
         value: database
       - key: QUEUE_CONNECTION
-        value: database
+        value: sync
       - key: FILESYSTEM_DISK
         value: local
       - key: MAIL_MAILER
@@ -47,147 +37,45 @@ envVarGroups:
         value: Mercova
 
 services:
-  # --- API Laravel (Apache) -------------------------------------------------
   - type: web
     name: mercova-api
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: 0.5c-512mb
+    plan: free
     region: oregon
-    branch: main
+    branch: principal
     healthCheckPath: /up
-    # Corre antes de cada deploy, en una instancia aparte (sin el disco).
-    preDeployCommand: php artisan migrate --force
-    # Imágenes subidas (storage/app/public, servidas en /storage/...).
-    # Un servicio con disco no puede escalar a varias instancias.
-    disk:
-      name: mercova-uploads
-      mountPath: /var/www/html/storage/app/public
-      sizeGB: 1
     envVars:
       - fromGroup: mercova-config
       - key: APP_KEY
         sync: false
-      - key: APP_URL # https://mercova-api.onrender.com (o tu dominio)
-        sync: false
-      - key: DB_HOST
-        sync: false
-      - key: DB_PORT
-        sync: false
-      - key: DB_DATABASE
-        sync: false
-      - key: DB_USERNAME
-        sync: false
-      - key: DB_PASSWORD
-        sync: false
-      - key: MYSQL_ATTR_SSL_CA # p. ej. /etc/secrets/ca.pem (Secret File de Render); vacío si no aplica
-        sync: false
-      - key: MAIL_USERNAME
-        sync: false
-      - key: MAIL_PASSWORD
-        sync: false
-      - key: MAIL_FROM_ADDRESS
-        sync: false
-      - key: MERCADOPAGO_PUBLIC_KEY
-        sync: false
-      - key: MERCADOPAGO_ACCESS_TOKEN
-        sync: false
-      - key: MERCADOPAGO_WEBHOOK_SECRET
-        sync: false
-      - key: MERCOVA_FRONTEND_URL # https://tu-app.vercel.app (sin barra final)
-        sync: false
-      - key: MERCOVA_ADMIN_EMAILS
-        sync: false
-
-  # --- Worker de colas (correos de Brevo) -----------------------------------
-  - type: worker
-    name: mercova-queue
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    plan: 0.5c-512mb
-    region: oregon
-    branch: main
-    # --max-time: el worker se reinicia cada hora y toma el código nuevo.
-    dockerCommand: php artisan queue:work --tries=3 --backoff=30 --max-time=3600
-    envVars:
-      - fromGroup: mercova-config
-      - key: APP_KEY
-        fromService: { type: web, name: mercova-api, envVarKey: APP_KEY }
       - key: APP_URL
-        fromService: { type: web, name: mercova-api, envVarKey: APP_URL }
+        sync: false
       - key: DB_HOST
-        fromService: { type: web, name: mercova-api, envVarKey: DB_HOST }
+        sync: false
       - key: DB_PORT
-        fromService: { type: web, name: mercova-api, envVarKey: DB_PORT }
+        sync: false
       - key: DB_DATABASE
-        fromService: { type: web, name: mercova-api, envVarKey: DB_DATABASE }
+        sync: false
       - key: DB_USERNAME
-        fromService: { type: web, name: mercova-api, envVarKey: DB_USERNAME }
+        sync: false
       - key: DB_PASSWORD
-        fromService: { type: web, name: mercova-api, envVarKey: DB_PASSWORD }
+        sync: false
       - key: MYSQL_ATTR_SSL_CA
-        fromService: { type: web, name: mercova-api, envVarKey: MYSQL_ATTR_SSL_CA }
+        sync: false
       - key: MAIL_USERNAME
-        fromService: { type: web, name: mercova-api, envVarKey: MAIL_USERNAME }
+        sync: false
       - key: MAIL_PASSWORD
-        fromService: { type: web, name: mercova-api, envVarKey: MAIL_PASSWORD }
+        sync: false
       - key: MAIL_FROM_ADDRESS
-        fromService: { type: web, name: mercova-api, envVarKey: MAIL_FROM_ADDRESS }
+        sync: false
       - key: MERCADOPAGO_PUBLIC_KEY
-        fromService: { type: web, name: mercova-api, envVarKey: MERCADOPAGO_PUBLIC_KEY }
+        sync: false
       - key: MERCADOPAGO_ACCESS_TOKEN
-        fromService: { type: web, name: mercova-api, envVarKey: MERCADOPAGO_ACCESS_TOKEN }
+        sync: false
       - key: MERCADOPAGO_WEBHOOK_SECRET
-        fromService: { type: web, name: mercova-api, envVarKey: MERCADOPAGO_WEBHOOK_SECRET }
+        sync: false
       - key: MERCOVA_FRONTEND_URL
-        fromService: { type: web, name: mercova-api, envVarKey: MERCOVA_FRONTEND_URL }
+        sync: false
       - key: MERCOVA_ADMIN_EMAILS
-        fromService: { type: web, name: mercova-api, envVarKey: MERCOVA_ADMIN_EMAILS }
-
-  # --- Cron: conciliación de pagos de planes + pedidos vencidos -------------
-  # Cada 10 minutos. orders:cancel-stale solo cancela pedidos sin pagar con
-  # más de MERCOVA_ORDER_EXPIRY_HOURS (48 h), así que correrlo seguido es
-  # inofensivo y evita depender de que el cron caiga justo en el minuto 0.
-  - type: cron
-    name: mercova-scheduler
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    plan: 0.5c-512mb
-    region: oregon
-    branch: main
-    schedule: "*/10 * * * *"
-    dockerCommand: sh -c "php artisan subscriptions:reconcile-payments && php artisan orders:cancel-stale"
-    envVars:
-      - fromGroup: mercova-config
-      - key: APP_KEY
-        fromService: { type: web, name: mercova-api, envVarKey: APP_KEY }
-      - key: APP_URL
-        fromService: { type: web, name: mercova-api, envVarKey: APP_URL }
-      - key: DB_HOST
-        fromService: { type: web, name: mercova-api, envVarKey: DB_HOST }
-      - key: DB_PORT
-        fromService: { type: web, name: mercova-api, envVarKey: DB_PORT }
-      - key: DB_DATABASE
-        fromService: { type: web, name: mercova-api, envVarKey: DB_DATABASE }
-      - key: DB_USERNAME
-        fromService: { type: web, name: mercova-api, envVarKey: DB_USERNAME }
-      - key: DB_PASSWORD
-        fromService: { type: web, name: mercova-api, envVarKey: DB_PASSWORD }
-      - key: MYSQL_ATTR_SSL_CA
-        fromService: { type: web, name: mercova-api, envVarKey: MYSQL_ATTR_SSL_CA }
-      - key: MAIL_USERNAME
-        fromService: { type: web, name: mercova-api, envVarKey: MAIL_USERNAME }
-      - key: MAIL_PASSWORD
-        fromService: { type: web, name: mercova-api, envVarKey: MAIL_PASSWORD }
-      - key: MAIL_FROM_ADDRESS
-        fromService: { type: web, name: mercova-api, envVarKey: MAIL_FROM_ADDRESS }
-      - key: MERCADOPAGO_PUBLIC_KEY
-        fromService: { type: web, name: mercova-api, envVarKey: MERCADOPAGO_PUBLIC_KEY }
-      - key: MERCADOPAGO_ACCESS_TOKEN
-        fromService: { type: web, name: mercova-api, envVarKey: MERCADOPAGO_ACCESS_TOKEN }
-      - key: MERCADOPAGO_WEBHOOK_SECRET
-        fromService: { type: web, name: mercova-api, envVarKey: MERCADOPAGO_WEBHOOK_SECRET }
-      - key: MERCOVA_FRONTEND_URL
-        fromService: { type: web, name: mercova-api, envVarKey: MERCOVA_FRONTEND_URL }
-      - key: MERCOVA_ADMIN_EMAILS
-        fromService: { type: web, name: mercova-api, envVarKey: MERCOVA_ADMIN_EMAILS }
+        sync: false
