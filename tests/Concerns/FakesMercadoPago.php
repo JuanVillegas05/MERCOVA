@@ -31,6 +31,9 @@ trait FakesMercadoPago
      */
     protected array $mercadoPagoCreatedPayment = [];
 
+    /** Status HTTP con el que responde POST /v1/payments. */
+    protected int $mercadoPagoCreatePaymentStatus = 201;
+
     protected function configureMercadoPago(): void
     {
         config([
@@ -49,7 +52,7 @@ trait FakesMercadoPago
                     'id' => 'pref-123',
                     'init_point' => 'https://www.mercadopago.com.co/checkout/v1/redirect?pref_id=pref-123',
                 ], 201),
-                $path === '/v1/payments' && $request->method() === 'POST' => Http::response($this->mercadoPagoCreatedPayment, 201),
+                $path === '/v1/payments' && $request->method() === 'POST' => Http::response($this->mercadoPagoCreatedPayment, $this->mercadoPagoCreatePaymentStatus),
                 $path === '/v1/payments/search' => Http::response(['results' => array_values(array_filter(
                     $this->mercadoPagoPayments,
                     fn (array $payment) => $payment['external_reference'] === ($query['external_reference'] ?? null),

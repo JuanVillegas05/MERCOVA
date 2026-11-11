@@ -8,6 +8,7 @@ use App\Models\Product;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Tests\Concerns\FakesMercadoPago;
 use Tests\TestCase;
@@ -383,5 +384,50 @@ class MercadoPagoPaymentTest extends TestCase
 
         $this->assertStringNotContainsString(self::MERCADOPAGO_ACCESS_TOKEN, $response->getContent());
         $this->assertStringNotContainsString(self::MERCADOPAGO_WEBHOOK_SECRET, $response->getContent());
+    }
+
+    public function test_checkout_config_keeps_the_same_shape_when_mercado_pago_is_not_configured(): void
+    {
+        config(['mercova.mercadopago.public_key' => null, 'mercova.mercadopago.access_token' => null]);
+
+        $this->getJson('/api/payments/config')
+            ->assertOk()
+            ->assertExactJson(['data' => [
+                'enabled' => false,
+                'public_key' => null,
+                'pse_banks' => [],
+                'identification_types' => ['CC', 'CE', 'NIT', 'PP'],
+            ]]);
+    }
+
+    public function test_a_reference_that_is_already_being_charged_cannot_be_charged_in_parallel(): void
+    {
+        $this->configureMercadoPago();
+        $customer = User::factory()->create();
+        $this->createPendingOrder($customer);
+        $inFlight = Cache::lock('payments:reference:ORDER-TEST-REF', 60);
+        $inFlight->get();
+
+        $this->actingAs($customer, 'sanctum')
+            ->postJson('/api/payments', $this->psePayload('ORDER-TEST-REF'))
+            ->assertConflict();
+
+        Http::assertNothingSent();
+        $inFlight->release();
+    }
+
+    public function test_rejected_mercado_pago_credentials_are_reported_as_unavailable_not_as_bad_card_data(): void
+    {
+        $this->configureMercadoPago();
+        $customer = User::factory()->create();
+        $order = $this->createPendingOrder($customer);
+        $this->mercadoPagoCreatePaymentStatus = 401;
+        $this->mercadoPagoCreatedPayment = ['message' => 'invalid access token', 'status' => 401];
+
+        $this->actingAs($customer, 'sanctum')
+            ->postJson('/api/payments', $this->psePayload('ORDER-TEST-REF'))
+            ->assertServiceUnavailable();
+
+        $this->assertSame('pending', $order->fresh()->payment_status);
     }
 }

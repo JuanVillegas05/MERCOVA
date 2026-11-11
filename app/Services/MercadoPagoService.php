@@ -199,16 +199,31 @@ class MercadoPagoService
             return [];
         }
 
-        return Cache::remember('mercadopago:pse-banks', now()->addHours(6), function (): array {
-            $methods = (new PaymentMethodClient($this->httpClient))->list($this->requestOptions());
-            $pse = collect($methods->getResponse()->getContent())->firstWhere('id', 'pse');
+        // Una caché por cuenta: al pasar de credenciales de prueba a las de
+        // producción no deben seguir saliendo los bancos de prueba.
+        $cacheKey = 'mercadopago:pse-banks:'.hash('sha256', (string) $this->publicKey);
+        $cached = Cache::get($cacheKey);
 
-            return collect($pse['financial_institutions'] ?? [])
-                ->map(fn (array $bank): array => ['id' => (string) $bank['id'], 'name' => (string) $bank['description']])
-                ->sortBy('name')
-                ->values()
-                ->all();
-        });
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        $methods = (new PaymentMethodClient($this->httpClient))->list($this->requestOptions());
+        $pse = collect($methods->getResponse()->getContent())->firstWhere('id', 'pse');
+
+        $banks = collect($pse['financial_institutions'] ?? [])
+            ->map(fn (array $bank): array => ['id' => (string) $bank['id'], 'name' => (string) $bank['description']])
+            ->sortBy('name')
+            ->values()
+            ->all();
+
+        // Una lista vacía (cuenta aún sin PSE habilitado) no se cachea, para
+        // que aparezcan los bancos apenas Mercado Pago los habilite.
+        if ($banks !== []) {
+            Cache::put($cacheKey, $banks, now()->addHours(6));
+        }
+
+        return $banks;
     }
 
     /**

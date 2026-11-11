@@ -9,6 +9,7 @@ use App\Services\MercadoPagoService;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -45,7 +46,14 @@ class PaymentController extends Controller
     public function config(): JsonResponse
     {
         if (! $this->mercadoPago->enabled()) {
-            return response()->json(['data' => ['enabled' => false, 'public_key' => null, 'pse_banks' => []]]);
+            // Misma forma que la respuesta habilitada: el frontend no tiene
+            // que comprobar si cada clave existe.
+            return response()->json(['data' => [
+                'enabled' => false,
+                'public_key' => null,
+                'pse_banks' => [],
+                'identification_types' => self::PSE_IDENTIFICATION_TYPES,
+            ]]);
         }
 
         try {
@@ -119,6 +127,15 @@ class PaymentController extends Controller
 
         $idempotencyKey = (string) $request->header('X-Idempotency-Key');
 
+        // La idempotency key solo protege los reintentos con la MISMA key: dos
+        // pestañas (o un doble envío sin key) podrían cobrar dos veces la
+        // misma referencia. Un intento a la vez por referencia.
+        $lock = Cache::lock('payments:reference:'.$validated['reference'], 60);
+
+        if (! $lock->get()) {
+            abort(409, 'Ya hay un pago en proceso para esta referencia. Espera unos segundos y revisa su estado.');
+        }
+
         try {
             $payment = $this->payments->pay(
                 $user,
@@ -127,16 +144,12 @@ class PaymentController extends Controller
                 Str::isUuid($idempotencyKey) ? $idempotencyKey : (string) Str::uuid(),
             );
         } catch (MPApiException $e) {
-            Log::warning('Mercado Pago rechazó la creación del pago.', [
-                'reference' => $validated['reference'],
-                'status' => $e->getStatusCode(),
-                'response' => $e->getApiResponse()->getContent(),
-            ]);
-
-            abort($e->getStatusCode() >= 500 ? 503 : 422, 'Mercado Pago no pudo procesar el pago. Revisa los datos e intenta de nuevo.');
+            $this->abortForMercadoPagoError($e, $validated['reference']);
         } catch (ConnectionException $e) {
             report($e);
             abort(503, 'No pudimos conectar con Mercado Pago. Intenta de nuevo en unos minutos.');
+        } finally {
+            $lock->release();
         }
 
         return response()->json(['data' => $this->summary($payment)], 201);
@@ -162,6 +175,30 @@ class PaymentController extends Controller
         $this->payments->apply($payment);
 
         return response()->json(['data' => $this->summary($payment)]);
+    }
+
+    /**
+     * 401/403 de Mercado Pago significan credenciales inválidas o sin
+     * permisos (problema nuestro, no del comprador): 503 y log de error.
+     * Otro 4xx es un rechazo de los datos del pago (422); 5xx, caída (503).
+     */
+    private function abortForMercadoPagoError(MPApiException $e, string $reference): never
+    {
+        $statusCode = $e->getStatusCode();
+        $context = [
+            'reference' => $reference,
+            'status' => $statusCode,
+            'response' => $e->getApiResponse()->getContent(),
+        ];
+
+        if (in_array($statusCode, [401, 403], true)) {
+            Log::error('Mercado Pago rechazó nuestras credenciales al crear un pago. Revisa MERCADOPAGO_ACCESS_TOKEN.', $context);
+            abort(503, 'La pasarela de pagos no está disponible en este momento. Intenta de nuevo más tarde.');
+        }
+
+        Log::warning('Mercado Pago rechazó la creación del pago.', $context);
+
+        abort($statusCode >= 500 ? 503 : 422, 'Mercado Pago no pudo procesar el pago. Revisa los datos e intenta de nuevo.');
     }
 
     /**
