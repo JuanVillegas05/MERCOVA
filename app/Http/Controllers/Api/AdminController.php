@@ -88,6 +88,12 @@ class AdminController extends Controller
 
         $user->update(['is_active' => $validated['is_active']]);
 
+        // El login ya rechaza cuentas inactivas, pero los tokens emitidos
+        // antes seguirían funcionando: se revocan para cortar el acceso ya.
+        if (! $validated['is_active']) {
+            $user->tokens()->delete();
+        }
+
         return response()->json([
             'message' => $validated['is_active'] ? 'Usuario activado.' : 'Usuario desactivado.',
             'data' => $user->fresh(),

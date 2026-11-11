@@ -71,6 +71,20 @@ class AdminManagementTest extends TestCase
             ->assertStatus(422);
     }
 
+    public function test_deactivating_a_user_revokes_the_tokens_they_already_had(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $customer = User::factory()->create(['role' => 'customer']);
+        $customerToken = $customer->createToken('mercova')->plainTextToken;
+
+        $this->actingAs($admin, 'sanctum')
+            ->patchJson("/api/admin/users/{$customer->id}/status", ['is_active' => false])
+            ->assertOk();
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($customerToken)->getJson('/api/me')->assertUnauthorized();
+    }
+
     public function test_admin_can_update_order_status_with_new_vocabulary(): void
     {
         $category = Category::create([
