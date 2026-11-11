@@ -12,7 +12,6 @@ use App\Services\SubscriptionService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 
 class ServiceController extends Controller
 {
@@ -91,7 +90,7 @@ class ServiceController extends Controller
         $validated['price'] = $breakdown['gross_price'];
         $validated['commission_rate'] = $breakdown['commission_rate'];
         $validated['net_amount'] = $breakdown['net_amount'];
-        $validated['slug'] = Str::slug($validated['title']);
+        $validated['slug'] = Service::uniqueSlugFor($validated['title']);
         $validated['status'] = 'active';
 
         $service = DB::transaction(function () use ($validated, $user) {
@@ -133,7 +132,7 @@ class ServiceController extends Controller
         ]);
 
         if (isset($validated['title'])) {
-            $validated['slug'] = Str::slug($validated['title']);
+            $validated['slug'] = Service::uniqueSlugFor($validated['title'], $service->id);
         }
 
         if (! empty($validated['is_featured']) && ! $service->is_featured) {
@@ -167,7 +166,14 @@ class ServiceController extends Controller
             abort(403, 'No tienes permisos para eliminar este servicio.');
         }
 
-        $service->delete();
+        // bookings.service_id es cascadeOnDelete: borrar un servicio con
+        // reservas borraría el historial (y las reservas en curso) de sus
+        // compradores. Se archiva: sale del marketplace igual.
+        if ($service->bookings()->exists()) {
+            $service->update(['status' => 'archived']);
+        } else {
+            $service->delete();
+        }
 
         return response()->json([
             'message' => 'Servicio eliminado correctamente.',
@@ -187,6 +193,15 @@ class ServiceController extends Controller
             // horarios que se solapan no pueden pasar ambas la validación
             // sobre el mismo estado leído.
             $lockedService = Service::query()->where('id', $service->id)->lockForUpdate()->firstOrFail();
+
+            if ($lockedService->status !== 'active') {
+                abort(422, 'Este servicio ya no está disponible para reservas.');
+            }
+
+            if ($lockedService->seller_id === $request->user()->id) {
+                abort(422, 'No puedes reservar tu propio servicio.');
+            }
+
             $durationMinutes = $lockedService->durationInMinutes();
 
             $start = Carbon::parse($validated['scheduled_at']);

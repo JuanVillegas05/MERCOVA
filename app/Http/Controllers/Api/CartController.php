@@ -61,6 +61,10 @@ class CartController extends Controller
             abort(422, 'Este producto es de alquiler. Usa "Solicitar alquiler" para elegir fechas.');
         }
 
+        if ($product->seller_id === $request->user()->id) {
+            abort(422, 'No puedes comprar tu propio producto.');
+        }
+
         $quantity = $validated['quantity'] ?? 1;
 
         $cart = $this->cartFor($request);

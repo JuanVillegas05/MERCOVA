@@ -187,6 +187,10 @@ class OrderController extends Controller
                 abort(422, 'Este producto es de alquiler. Usa el flujo de solicitud de alquiler (/api/rentals).');
             }
 
+            if ($product->seller_id === $request->user()->id) {
+                abort(422, 'No puedes comprar tu propio producto.');
+            }
+
             if ($product->stock < $validated['quantity']) {
                 abort(422, 'No hay stock suficiente para esta cantidad.');
             }
@@ -274,6 +278,10 @@ class OrderController extends Controller
 
                 if ($product->transaction_type !== 'sale') {
                     abort(422, "\"{$product->title}\" es de alquiler y no se compra desde el carrito.");
+                }
+
+                if ($product->seller_id === $request->user()->id) {
+                    abort(422, "\"{$product->title}\" es una publicación tuya. Quítala del carrito para continuar.");
                 }
 
                 if ($item->quantity > $product->stock) {

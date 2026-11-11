@@ -11,7 +11,6 @@ use App\Services\CommissionCalculator;
 use App\Services\SubscriptionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 
 class ProductController extends Controller
 {
@@ -185,7 +184,7 @@ class ProductController extends Controller
             $validated['net_amount'] = $breakdown['net_amount'];
         }
 
-        $validated['slug'] = Str::slug($validated['title']);
+        $validated['slug'] = Product::uniqueSlugFor($validated['title']);
         $validated['status'] = 'active';
 
         $product = DB::transaction(function () use ($validated, $user) {
@@ -232,7 +231,7 @@ class ProductController extends Controller
         ]);
 
         if (isset($validated['title'])) {
-            $validated['slug'] = Str::slug($validated['title']);
+            $validated['slug'] = Product::uniqueSlugFor($validated['title'], $product->id);
         }
 
         if (! empty($validated['is_featured']) && ! $product->is_featured) {
@@ -287,7 +286,15 @@ class ProductController extends Controller
             abort(403, 'No tienes permisos para eliminar este producto.');
         }
 
-        $product->delete();
+        // rentals.product_id es cascadeOnDelete: borrar un producto con
+        // alquileres borraría el historial (y los alquileres en curso) de
+        // sus arrendatarios, y dejaría sin producto los pedidos pasados. Se
+        // archiva: sale del marketplace igual.
+        if ($product->rentals()->exists() || $product->orderItems()->exists()) {
+            $product->update(['status' => 'archived']);
+        } else {
+            $product->delete();
+        }
 
         return response()->json([
             'message' => 'Producto eliminado correctamente.',

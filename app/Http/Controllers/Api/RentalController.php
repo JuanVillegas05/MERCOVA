@@ -91,6 +91,10 @@ class RentalController extends Controller
                 abort(422, 'Este producto no está disponible para alquiler.');
             }
 
+            if ($product->seller_id === $request->user()->id) {
+                abort(422, 'No puedes alquilar tu propio producto.');
+            }
+
             if (! $product->price_per_day) {
                 abort(422, 'Este producto todavía no tiene definido un precio por día.');
             }
