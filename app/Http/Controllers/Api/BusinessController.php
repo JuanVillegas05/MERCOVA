@@ -114,13 +114,35 @@ class BusinessController extends Controller
 
         $plan = MembershipPlan::findOrFail($validated['membership_plan_id']);
 
-        $period = $plan->billing_period === 'anual' ? now()->addYear() : now()->addMonth();
+        $expiresAt = $plan->billing_period === 'anual' ? now()->addYear() : now()->addMonth();
+
+        // Solo el admin asigna planes sin pago. El dueño puede vincular un
+        // plan gratuito o el plan de pago que ya contrató (y Mercado Pago
+        // confirmó) por POST /api/subscriptions/checkout, hasta que venza.
+        if ($user->role !== 'admin') {
+            if (! $plan->is_active) {
+                abort(422, 'Este plan no está disponible.');
+            }
+
+            if (! $plan->isFree()) {
+                $subscription = $user->activeSubscription()->first();
+
+                if ($subscription?->membership_plan_id !== $plan->id) {
+                    return response()->json([
+                        'message' => 'Este plan requiere pago. Contrátalo desde el checkout de planes y luego vincúlalo a tu emprendimiento.',
+                        'code' => 'payment_required',
+                    ], 422);
+                }
+
+                $expiresAt = $subscription->ends_at ?? $expiresAt;
+            }
+        }
 
         $business->update([
             'membership_plan_id' => $plan->id,
             'status' => 'active',
             'membership_started_at' => now(),
-            'membership_expires_at' => $period,
+            'membership_expires_at' => $expiresAt,
         ]);
 
         return response()->json([

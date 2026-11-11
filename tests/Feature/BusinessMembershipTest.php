@@ -2,8 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Models\Business;
 use App\Models\Category;
 use App\Models\MembershipPlan;
+use App\Models\Subscription;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -62,6 +64,8 @@ class BusinessMembershipTest extends TestCase
             'billing_period' => 'mensual',
             'max_listings' => 30,
         ]);
+        // El plan de pago ya fue contratado y confirmado por Mercado Pago.
+        Subscription::factory()->for($seller)->create(['membership_plan_id' => $plan->id]);
 
         $this->actingAs($seller, 'sanctum')->postJson("/api/businesses/{$business->id}/subscribe", [
             'membership_plan_id' => $plan->id,
@@ -78,5 +82,59 @@ class BusinessMembershipTest extends TestCase
 
         $allowed->assertStatus(201)
             ->assertJsonPath('data.business_id', $business->id);
+    }
+
+    public function test_owner_cannot_activate_a_paid_plan_on_their_business_without_paying_it(): void
+    {
+        $seller = User::factory()->create(['role' => 'seller']);
+        $business = $this->createPendingBusiness($seller);
+        $paidPlan = MembershipPlan::factory()->create(['price' => 49900]);
+
+        $this->actingAs($seller, 'sanctum')
+            ->postJson("/api/businesses/{$business->id}/subscribe", ['membership_plan_id' => $paidPlan->id])
+            ->assertUnprocessable()
+            ->assertJsonPath('code', 'payment_required');
+
+        $this->assertSame('pending', $business->fresh()->status);
+        $this->assertNull($business->fresh()->membership_plan_id);
+    }
+
+    public function test_paid_membership_on_a_business_ends_when_the_owners_paid_subscription_ends(): void
+    {
+        $seller = User::factory()->create(['role' => 'seller']);
+        $business = $this->createPendingBusiness($seller);
+        $paidPlan = MembershipPlan::factory()->create(['price' => 49900]);
+        $subscription = Subscription::factory()->for($seller)->create([
+            'membership_plan_id' => $paidPlan->id,
+            'ends_at' => now()->addDays(10),
+        ]);
+
+        $this->actingAs($seller, 'sanctum')
+            ->postJson("/api/businesses/{$business->id}/subscribe", ['membership_plan_id' => $paidPlan->id])
+            ->assertOk();
+
+        $this->assertTrue($business->fresh()->membership_expires_at->equalTo($subscription->ends_at));
+    }
+
+    public function test_admin_can_assign_any_plan_to_a_business_without_payment(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $business = $this->createPendingBusiness(User::factory()->create(['role' => 'seller']));
+        $paidPlan = MembershipPlan::factory()->create(['price' => 49900]);
+
+        $this->actingAs($admin, 'sanctum')
+            ->postJson("/api/businesses/{$business->id}/subscribe", ['membership_plan_id' => $paidPlan->id])
+            ->assertOk()
+            ->assertJsonPath('data.status', 'active');
+    }
+
+    private function createPendingBusiness(User $owner): Business
+    {
+        return Business::create([
+            'user_id' => $owner->id,
+            'name' => 'Panadería Doña Rosa',
+            'slug' => 'panaderia-dona-rosa-'.uniqid(),
+            'status' => 'pending',
+        ]);
     }
 }
