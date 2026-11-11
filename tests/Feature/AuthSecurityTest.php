@@ -35,6 +35,21 @@ class AuthSecurityTest extends TestCase
             ->assertStatus(429);
     }
 
+    public function test_login_rate_limit_is_per_client_ip_behind_the_load_balancer(): void
+    {
+        $user = User::factory()->create(['email' => 'proxy@mercova.test']);
+        $attempt = fn (string $clientIp) => $this
+            ->withHeader('X-Forwarded-For', $clientIp)
+            ->postJson('/api/login', ['email' => $user->email, 'password' => 'wrong-password']);
+
+        for ($i = 0; $i < 10; $i++) {
+            $attempt('203.0.113.10')->assertStatus(401);
+        }
+
+        $attempt('203.0.113.10')->assertStatus(429);
+        $attempt('198.51.100.20')->assertStatus(401);
+    }
+
     public function test_me_returns_the_owner_of_the_token_sent_in_each_request(): void
     {
         $first = $this->postJson('/api/register', [

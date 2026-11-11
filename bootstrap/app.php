@@ -24,6 +24,13 @@ return Application::configure(basePath: dirname(__DIR__))
             'plan.feature' => EnsurePlanFeature::class,
         ]);
 
+        // En producción (Render) el TLS termina en su balanceador, que es el
+        // único que llega a la app. Sin confiar en él, todos los usuarios
+        // comparten su IP (y el throttle de login se agota para todos a la
+        // vez) y las URLs se generan con http://, así que Mercado Pago no
+        // recibe notification_url.
+        $middleware->trustProxies(at: '*');
+
         // Ninguna respuesta de la API (datos de cuenta, pedidos, tokens...) se
         // guarda en caché del navegador ni de proxies. Va antes que la
         // autenticación y el throttle en la lista de prioridad para que sus

@@ -39,6 +39,9 @@ class Product extends Model
         'net_amount' => 'decimal:2',
         'stock' => 'integer',
         'is_featured' => 'boolean',
+        // withAvg('reviews', 'rating'): MySQL lo devuelve como string
+        // ("4.0000") y SQLite como número; el frontend siempre recibe número.
+        'reviews_avg_rating' => 'float',
     ];
 
     public function seller()
