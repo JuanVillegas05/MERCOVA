@@ -3,6 +3,8 @@
 use App\Http\Middleware\EnforcePlanQuota;
 use App\Http\Middleware\EnsurePlanFeature;
 use App\Http\Middleware\EnsureUserIsAdmin;
+use App\Http\Middleware\PreventResponseCaching;
+use Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -21,6 +23,13 @@ return Application::configure(basePath: dirname(__DIR__))
             'plan.quota' => EnforcePlanQuota::class,
             'plan.feature' => EnsurePlanFeature::class,
         ]);
+
+        // Ninguna respuesta de la API (datos de cuenta, pedidos, tokens...) se
+        // guarda en caché del navegador ni de proxies. Va antes que la
+        // autenticación y el throttle en la lista de prioridad para que sus
+        // 401/429 también lleven las cabeceras.
+        $middleware->api(prepend: [PreventResponseCaching::class]);
+        $middleware->prependToPriorityList(before: AuthenticatesRequests::class, prepend: PreventResponseCaching::class);
 
         // Apple devuelve el login con un POST desde appleid.apple.com, que no
         // puede traer nuestro token CSRF. Ese callback se protege con el

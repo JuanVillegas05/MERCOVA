@@ -8,7 +8,6 @@ use App\Services\SocialLoginCodes;
 use App\Services\SubscriptionService;
 use Illuminate\Auth\Events\PasswordReset;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Validation\Rule;
@@ -73,18 +72,21 @@ class AuthController extends Controller
             'password' => ['required', 'string'],
         ]);
 
-        if (! Auth::attempt($credentials)) {
+        // Validación sin sesión: la API es 100% por token. Auth::attempt()
+        // iniciaría sesión en el guard "web", que Sanctum consulta ANTES que
+        // el Bearer token; con cookies de por medio, /me podría devolver al
+        // usuario de esa sesión en vez del dueño del token.
+        $user = User::query()->where('email', $credentials['email'])->first();
+
+        if (! $user || ! Hash::check($credentials['password'], $user->password)) {
             return response()->json([
                 'message' => 'Credenciales inválidas.',
             ], 401);
         }
 
-        $user = Auth::user();
         $user->syncRoleFromAdminEmailList();
 
         if (! $user->is_active) {
-            Auth::logout();
-
             return response()->json([
                 'message' => 'Tu cuenta ha sido desactivada. Contacta a un administrador.',
             ], 403);

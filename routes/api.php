@@ -53,6 +53,8 @@ Route::get('/businesses/{business:slug}', [BusinessController::class, 'show']);
 // 10 intentos por minuto por IP: suficiente para un usuario real que se
 // equivoca de contraseña varias veces, pero corta la fuerza bruta y el
 // "credential stuffing" contra login/registro/recuperación de contraseña.
+// (Todas las respuestas de /api llevan Cache-Control: no-store, ver
+// PreventResponseCaching en bootstrap/app.php.)
 Route::middleware('throttle:10,1')->group(function () {
     Route::post('/auth/check-identifier', [AuthController::class, 'checkIdentifier']);
     Route::post('/register', [AuthController::class, 'register']);
@@ -62,6 +64,7 @@ Route::middleware('throttle:10,1')->group(function () {
     Route::post('/reset-password', [AuthController::class, 'resetPassword']);
 });
 
+// Todo lo autenticado se resuelve con el token de ESTA petición.
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     Route::put('/me', [AuthController::class, 'updateProfile']);
@@ -145,6 +148,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/users', [AdminController::class, 'users']);
         Route::get('/users/{user}', [AdminController::class, 'showUser']);
         Route::patch('/users/{user}/status', [AdminController::class, 'updateUserStatus']);
+        Route::delete('/users/{user}', [AdminController::class, 'destroyUser']);
         Route::put('/users/{user}/subscription', [SubscriptionController::class, 'adminUpdate']);
 
         Route::get('/products', [AdminController::class, 'products']);
