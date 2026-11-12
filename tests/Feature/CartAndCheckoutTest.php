@@ -226,6 +226,7 @@ class CartAndCheckoutTest extends TestCase
             'city' => 'Bogotá',
         ])
             ->assertStatus(422)
+            ->assertJsonPath('message', 'El campo nombre de quien recibe es obligatorio. (y 3 errores más)')
             ->assertJsonPath('errors.recipient_name.0', 'El campo nombre de quien recibe es obligatorio.')
             ->assertJsonPath('errors.address.0', 'El campo dirección es obligatorio.');
     }
