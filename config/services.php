@@ -53,4 +53,11 @@ return [
         ],
     ],
 
+    // Imágenes subidas por los usuarios (ver App\Services\CloudinaryService).
+    // Sin CLOUDINARY_URL se guardan en el disco "public" (solo para local).
+    'cloudinary' => [
+        'url' => env('CLOUDINARY_URL'),
+        'folder' => env('CLOUDINARY_FOLDER', 'mercova'),
+    ],
+
 ];

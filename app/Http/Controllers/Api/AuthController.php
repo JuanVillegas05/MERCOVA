@@ -193,20 +193,19 @@ class AuthController extends Controller
         ]);
     }
 
+    /**
+     * Siempre responde lo mismo, exista o no la cuenta (o se haya pedido un
+     * enlace hace poco): así no sirve para averiguar qué correos están
+     * registrados.
+     */
     public function forgotPassword(Request $request)
     {
         $request->validate(['email' => ['required', 'email']]);
 
-        $status = Password::sendResetLink($request->only('email'));
-
-        if ($status !== Password::RESET_LINK_SENT) {
-            return response()->json([
-                'message' => 'No pudimos enviar el enlace de recuperación.',
-            ], 422);
-        }
+        Password::sendResetLink($request->only('email'));
 
         return response()->json([
-            'message' => 'Te enviamos un enlace para recuperar tu contraseña.',
+            'message' => 'Si el correo está registrado, te enviamos un enlace para restablecer tu contraseña.',
         ]);
     }
 
@@ -222,6 +221,9 @@ class AuthController extends Controller
             $validated,
             function (User $user, string $password) {
                 $user->update(['password' => Hash::make($password)]);
+                // Cierra todas las sesiones abiertas: si alguien más tenía
+                // acceso a la cuenta, lo pierde junto con la contraseña vieja.
+                $user->tokens()->delete();
                 event(new PasswordReset($user));
             }
         );
