@@ -65,6 +65,13 @@ return [
             'transport' => 'resend',
         ],
 
+        // API HTTP de Brevo (ver App\Mail\Transport\BrevoTransport). Se usa en
+        // Render, que bloquea los puertos SMTP salientes en el plan gratuito.
+        'brevo' => [
+            'transport' => 'brevo',
+            'key' => env('BREVO_API_KEY'),
+        ],
+
         'sendmail' => [
             'transport' => 'sendmail',
             'path' => env('MAIL_SENDMAIL_PATH', '/usr/sbin/sendmail -bs -i'),
