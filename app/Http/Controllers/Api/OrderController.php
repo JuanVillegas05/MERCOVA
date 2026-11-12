@@ -18,6 +18,12 @@ use Illuminate\Validation\Rule;
 
 class OrderController extends Controller
 {
+    /** El medio concreto (tarjeta, PSE, Nequi...) lo elige el comprador en Wompi. */
+    private const DEFAULT_PAYMENT_METHOD = 'wompi';
+
+    /** Máximo de líneas distintas en un checkout con `items`. */
+    private const MAX_CHECKOUT_ITEMS = 50;
+
     public function __construct(
         private readonly CommissionCalculator $commission,
         private readonly WompiService $wompi,
@@ -188,7 +194,7 @@ class OrderController extends Controller
                 'total' => $total,
                 'commission_amount' => $breakdown['commission_amount'],
                 'net_amount' => $breakdown['net_amount'],
-                'payment_method' => $validated['payment_method'] ?? 'debit_card',
+                'payment_method' => $validated['payment_method'] ?? self::DEFAULT_PAYMENT_METHOD,
                 'payment_reference' => $this->wompi->generateReference('ORDER'),
                 'payment_status' => 'pending',
                 'transaction_type' => $product->transaction_type,
@@ -222,8 +228,13 @@ class OrderController extends Controller
     }
 
     /**
-     * Finaliza la compra de todo el carrito. Se crea un pedido por cada vendedor
+     * Finaliza la compra de un carrito. Se crea un pedido por cada vendedor
      * involucrado (un pedido nunca mezcla productos de dos vendedores distintos).
+     *
+     * El carrito puede venir en el body (`items: [{product_id, quantity}]`,
+     * para un frontend que lo guarda en el navegador) o, si no se manda, es
+     * el carrito guardado en el servidor (/api/cart), que se vacía al terminar.
+     * Precios y stock siempre salen de la base de datos.
      */
     public function checkout(Request $request)
     {
@@ -233,14 +244,27 @@ class OrderController extends Controller
             'address' => ['required', 'string', 'max:255'],
             'city' => ['required', 'string', 'max:100'],
             'department' => ['required', 'string', 'max:100'],
-            'payment_method' => ['required', Rule::in(array_keys(config('mercova.payment_methods')))],
+            'payment_method' => ['nullable', Rule::in(array_keys(config('mercova.payment_methods')))],
             'notes' => ['nullable', 'string', 'max:500'],
+            'items' => ['sometimes', 'array', 'min:1', 'max:'.self::MAX_CHECKOUT_ITEMS],
+            'items.*.product_id' => ['required', 'integer', 'distinct'],
+            'items.*.quantity' => ['required', 'integer', 'min:1', 'max:999'],
         ]);
 
         $orders = DB::transaction(function () use ($validated, $request) {
-            $cart = Cart::with('items')->firstOrCreate(['user_id' => $request->user()->id]);
+            $cart = null;
 
-            if ($cart->items->isEmpty()) {
+            if (isset($validated['items'])) {
+                $lines = collect($validated['items'])->map(fn (array $item) => (object) [
+                    'product_id' => (int) $item['product_id'],
+                    'quantity' => (int) $item['quantity'],
+                ]);
+            } else {
+                $cart = Cart::with('items')->firstOrCreate(['user_id' => $request->user()->id]);
+                $lines = $cart->items;
+            }
+
+            if ($lines->isEmpty()) {
                 abort(422, 'Tu carrito está vacío.');
             }
 
@@ -249,10 +273,10 @@ class OrderController extends Controller
             // checkouts simultáneos sobre el mismo producto no pueden pasar
             // ambos la validación sobre el mismo valor leído, y el orden fijo
             // evita deadlocks entre checkouts que comparten productos.
-            $productIds = $cart->items->pluck('product_id')->unique()->sort()->values();
+            $productIds = $lines->pluck('product_id')->unique()->sort()->values();
             $products = Product::query()->whereIn('id', $productIds)->lockForUpdate()->get()->keyBy('id');
 
-            foreach ($cart->items as $item) {
+            foreach ($lines as $item) {
                 $product = $products->get($item->product_id);
 
                 if (! $product || $product->status !== 'active') {
@@ -278,7 +302,7 @@ class OrderController extends Controller
             // busca por esta referencia y marca todos los pedidos a la vez.
             $paymentReference = $this->wompi->generateReference('CART');
 
-            $orders = $cart->items
+            $orders = $lines
                 ->groupBy(fn ($item) => $products->get($item->product_id)->seller_id)
                 ->map(function ($items, $sellerId) use ($validated, $request, $products, $paymentReference) {
                     $sellerCommission = $this->commission->forSeller(User::find($sellerId));
@@ -290,7 +314,7 @@ class OrderController extends Controller
                         'seller_id' => $sellerId,
                         'status' => 'pending',
                         'total' => $total,
-                        'payment_method' => $validated['payment_method'],
+                        'payment_method' => $validated['payment_method'] ?? self::DEFAULT_PAYMENT_METHOD,
                         'payment_reference' => $paymentReference,
                         'payment_status' => 'pending',
                         'transaction_type' => $products->get($items->first()->product_id)->transaction_type,
@@ -336,7 +360,8 @@ class OrderController extends Controller
                 })
                 ->values();
 
-            $cart->items()->delete();
+            // El carrito del servidor solo se vacía si fue el que se compró.
+            $cart?->items()->delete();
 
             return $orders;
         });

@@ -164,6 +164,72 @@ class CartAndCheckoutTest extends TestCase
         ])->assertStatus(422);
     }
 
+    public function test_checkout_buys_the_items_sent_in_the_body_without_touching_the_server_cart(): void
+    {
+        $category = Category::create(['name' => 'Hogar', 'slug' => 'hogar']);
+        $sellerA = User::factory()->create(['role' => 'seller']);
+        $sellerB = User::factory()->create(['role' => 'seller']);
+        $customer = User::factory()->create(['role' => 'customer']);
+        $productA = $this->createProduct($sellerA, $category, ['stock' => 5, 'price' => 100000]);
+        $productB = $this->createProduct($sellerB, $category, ['stock' => 5, 'price' => 50000]);
+        $savedInServerCart = $this->createProduct($sellerB, $category, ['stock' => 5]);
+        $this->actingAs($customer, 'sanctum')->postJson('/api/cart/items', ['product_id' => $savedInServerCart->id, 'quantity' => 1]);
+
+        $response = $this->actingAs($customer, 'sanctum')->postJson('/api/checkout', [
+            'recipient_name' => 'Cliente Mercova',
+            'recipient_phone' => '+573001234567',
+            'address' => 'Calle 1 # 2-34',
+            'city' => 'Bogotá',
+            'department' => 'Cundinamarca',
+            'items' => [
+                ['product_id' => $productA->id, 'quantity' => 2, 'price' => 1],
+                ['product_id' => $productB->id, 'quantity' => 1],
+            ],
+        ]);
+
+        $response->assertCreated();
+        $this->assertCount(2, $response->json('data'));
+        $this->assertSame(250000.0, collect($response->json('data'))->sum(fn (array $order) => (float) $order['total']));
+        $this->assertSame(['wompi'], collect($response->json('data'))->pluck('payment_method')->unique()->values()->all());
+        $this->assertSame(3, $productA->fresh()->stock);
+        $this->assertSame(4, $productB->fresh()->stock);
+        $this->assertSame(5, $savedInServerCart->fresh()->stock);
+        $this->actingAs($customer, 'sanctum')->getJson('/api/cart')
+            ->assertJsonPath('data.items.0.product_id', $savedInServerCart->id);
+    }
+
+    public function test_checkout_with_body_items_rejects_quantities_above_stock(): void
+    {
+        $category = Category::create(['name' => 'Hogar', 'slug' => 'hogar']);
+        $customer = User::factory()->create(['role' => 'customer']);
+        $product = $this->createProduct(User::factory()->create(['role' => 'seller']), $category, ['stock' => 2]);
+
+        $this->actingAs($customer, 'sanctum')->postJson('/api/checkout', [
+            'recipient_name' => 'Cliente Mercova',
+            'recipient_phone' => '+573001234567',
+            'address' => 'Calle 1 # 2-34',
+            'city' => 'Bogotá',
+            'department' => 'Cundinamarca',
+            'items' => [['product_id' => $product->id, 'quantity' => 3]],
+        ])->assertStatus(422);
+
+        $this->assertSame(2, $product->fresh()->stock);
+        $this->assertDatabaseCount('orders', 0);
+    }
+
+    public function test_checkout_validation_errors_are_in_spanish(): void
+    {
+        app()->setLocale('es');
+        $customer = User::factory()->create(['role' => 'customer']);
+
+        $this->actingAs($customer, 'sanctum')->postJson('/api/checkout', [
+            'city' => 'Bogotá',
+        ])
+            ->assertStatus(422)
+            ->assertJsonPath('errors.recipient_name.0', 'El campo nombre de quien recibe es obligatorio.')
+            ->assertJsonPath('errors.address.0', 'El campo dirección es obligatorio.');
+    }
+
     public function test_checkout_rejects_unknown_payment_method(): void
     {
         $category = Category::create(['name' => 'Hogar', 'slug' => 'hogar']);

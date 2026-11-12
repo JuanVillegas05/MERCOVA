@@ -37,6 +37,8 @@ return [
     |
     */
     'payment_methods' => [
+        // Por defecto: el comprador elige tarjeta, PSE, Nequi... en Wompi.
+        'wompi' => 'Wompi (tarjeta, PSE, Nequi, Bancolombia)',
         'debit_card' => 'Tarjeta débito',
         'credit_card' => 'Tarjeta crédito',
         'pse' => 'PSE',
