@@ -115,7 +115,7 @@ class SubscriptionService
     /**
      * "Volver al plan gratuito": el plan pago sigue vigente hasta su fecha
      * de vencimiento (ya está pagado) y no se renueva. Como los planes se
-     * cobran periodo a periodo (sin cobros recurrentes en Mercado Pago), nunca hay un cobro que detener:
+     * cobran periodo a periodo (sin cobros recurrentes en Wompi), nunca hay un cobro que detener:
      * esto deja constancia de la decisión para el frontend y recordatorios.
      */
     public function cancelAtPeriodEnd(Subscription $subscription): void

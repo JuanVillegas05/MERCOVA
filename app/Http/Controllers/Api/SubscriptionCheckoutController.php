@@ -34,7 +34,7 @@ class SubscriptionCheckoutController extends Controller
     }
 
     /**
-     * Inicia el pago del plan elegido y devuelve la URL de Mercado Pago. El plan
+     * Inicia el pago del plan elegido y devuelve el enlace de pago de Wompi. El plan
      * del usuario no cambia hasta que el webhook confirme el pago.
      */
     public function store(Request $request): JsonResponse
@@ -67,11 +67,11 @@ class SubscriptionCheckoutController extends Controller
     }
 
     /**
-     * Estado de un pago: el frontend lo consulta al volver de Mercado Pago hasta
+     * Estado de un pago: el frontend lo consulta al volver de Wompi hasta
      * que deje de estar "pending". 404 si no es del usuario, para no
      * revelar que existe.
      *
-     * Si sigue pendiente, le pregunta a Mercado Pago directamente (como mucho una
+     * Si sigue pendiente, le pregunta a Wompi directamente (como mucho una
      * vez cada 10 s por pago): así el plan se activa aunque el webhook se
      * demore o se pierda.
      */

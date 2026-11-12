@@ -27,7 +27,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // En producción (Render) el TLS termina en su balanceador, que es el
         // único que llega a la app. Sin confiar en él, todos los usuarios
         // comparten su IP (y el throttle de login se agota para todos a la
-        // vez) y las URLs se generan con http://, así que Mercado Pago no
+        // vez) y las URLs se generan con http://, así que Wompi no
         // recibe notification_url.
         $middleware->trustProxies(at: '*');
 

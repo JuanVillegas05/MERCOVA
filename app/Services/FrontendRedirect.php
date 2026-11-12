@@ -4,7 +4,7 @@ namespace App\Services;
 
 /**
  * Valida URLs de retorno que manda el frontend externo (login social,
- * retorno de Mercado Pago). Solo se acepta una URL cuyo esquema+dominio(+puerto)
+ * retorno de Wompi). Solo se acepta una URL cuyo esquema+dominio(+puerto)
  * coincida con MERCOVA_FRONTEND_URL; cualquier otra se descarta para no
  * abrir un "open redirect" que entregue tokens o códigos a terceros.
  */

@@ -4,270 +4,119 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Services\FrontendRedirect;
-use App\Services\MercadoPagoPaymentService;
-use App\Services\MercadoPagoService;
+use App\Services\PaymentService;
+use App\Services\WompiService;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
-use Illuminate\Validation\Rule;
-use MercadoPago\Exceptions\MPApiException;
-use Throwable;
 
 /**
- * Checkout propio (Checkout API de Mercado Pago) para pagar una referencia
- * ya creada por POST /api/orders, POST /api/checkout o
- * POST /api/subscriptions/checkout:
+ * Pago con Wompi (Web Checkout) de una referencia ya creada por
+ * POST /api/orders, POST /api/checkout o POST /api/subscriptions/checkout:
  *
- * - Tarjeta: el frontend tokeniza la tarjeta con MercadoPago.js usando la
- *   public key y solo manda el token; el número nunca pasa por aquí.
- * - PSE: el comprador elige su banco (GET /api/payments/config) y se le
- *   redirige a `redirect_url` para autorizar el débito en su banco.
+ * 1. POST /api/payments devuelve `payment_url`, el enlace firmado del Web
+ *    Checkout. El frontend redirige ahí al comprador, que paga con tarjeta,
+ *    PSE, Nequi, Bancolombia... en la página de Wompi.
+ * 2. Wompi lo devuelve a `return_url?id={transacción}`. El frontend consulta
+ *    GET /api/payments/{id} para mostrar el resultado.
  *
- * El monto y la descripción siempre se calculan aquí desde la base de datos.
+ * El monto siempre se calcula aquí desde la base de datos.
  */
 class PaymentController extends Controller
 {
-    /** Tipos de documento que acepta PSE para el pagador. */
-    private const PSE_IDENTIFICATION_TYPES = ['CC', 'CE', 'NIT', 'PP'];
-
     public function __construct(
-        private readonly MercadoPagoService $mercadoPago,
-        private readonly MercadoPagoPaymentService $payments,
+        private readonly WompiService $wompi,
+        private readonly PaymentService $payments,
         private readonly FrontendRedirect $frontendRedirect,
     ) {}
 
     /**
-     * Lo que el frontend necesita para pintar el checkout: la public key
-     * (pública por diseño) y los bancos de PSE.
+     * Lo que el frontend necesita saber de la pasarela. La llave pública es
+     * pública por diseño; ningún secreto sale de aquí.
      */
     public function config(): JsonResponse
     {
-        if (! $this->mercadoPago->enabled()) {
-            // Misma forma que la respuesta habilitada: el frontend no tiene
-            // que comprobar si cada clave existe.
-            return response()->json(['data' => [
-                'enabled' => false,
-                'public_key' => null,
-                'pse_banks' => [],
-                'identification_types' => self::PSE_IDENTIFICATION_TYPES,
-            ]]);
-        }
-
-        try {
-            $banks = $this->mercadoPago->pseBanks();
-        } catch (Throwable $e) {
-            // Sin bancos se puede seguir pagando con tarjeta.
-            report($e);
-            $banks = [];
-        }
-
-        return response()->json([
-            'data' => [
-                'enabled' => true,
-                'public_key' => $this->mercadoPago->publicKey(),
-                'pse_banks' => $banks,
-                'identification_types' => self::PSE_IDENTIFICATION_TYPES,
-            ],
-        ]);
+        return response()->json(['data' => [
+            'enabled' => $this->wompi->enabled(),
+            'provider' => 'wompi',
+            'public_key' => $this->wompi->enabled() ? $this->wompi->publicKey() : null,
+        ]]);
     }
 
     /**
-     * Cobra una referencia con tarjeta (token) o PSE. Mandar el mismo header
-     * `X-Idempotency-Key` (UUID) en los reintentos evita cobrar dos veces.
+     * Enlace de pago de una referencia del usuario. `return_url` solo se
+     * acepta si es del frontend configurado (sin open redirect); si no, se
+     * usa la página de retorno de este backend.
      */
     public function store(Request $request): JsonResponse
     {
-        if (! $this->mercadoPago->enabled()) {
+        if (! $this->wompi->enabled()) {
             abort(503, 'La pasarela de pagos no está configurada todavía.');
         }
 
         $validated = $request->validate([
             'reference' => ['required', 'string', 'max:64'],
-            'payment_method' => ['required', Rule::in(['card', 'pse'])],
             'return_url' => ['nullable', 'string', 'url', 'max:2048'],
-
-            'card' => ['exclude_unless:payment_method,card', 'required', 'array'],
-            'card.token' => ['exclude_unless:payment_method,card', 'required', 'string', 'max:255'],
-            'card.payment_method_id' => ['exclude_unless:payment_method,card', 'required', 'string', 'max:50'],
-            'card.issuer_id' => ['exclude_unless:payment_method,card', 'nullable', 'integer'],
-            'card.installments' => ['exclude_unless:payment_method,card', 'required', 'integer', 'between:1,36'],
-
-            'pse' => ['exclude_unless:payment_method,pse', 'required', 'array'],
-            'pse.financial_institution' => ['exclude_unless:payment_method,pse', 'required', 'string', 'max:20'],
-            'pse.entity_type' => ['exclude_unless:payment_method,pse', 'required', Rule::in(['individual', 'association'])],
-
-            'payer' => ['nullable', 'array'],
-            'payer.email' => ['nullable', 'email', 'max:255'],
-            // En tarjeta el tipo lo elige el Brick de Mercado Pago; en PSE
-            // solo se aceptan los tipos que PSE admite.
-            'payer.identification.type' => ['required_if:payment_method,pse', 'nullable', 'string', 'max:20', Rule::when(
-                $request->input('payment_method') === 'pse',
-                [Rule::in(self::PSE_IDENTIFICATION_TYPES)],
-            )],
-            'payer.identification.number' => ['required_if:payment_method,pse', 'nullable', 'string', 'regex:/^[A-Za-z0-9]{4,20}$/'],
-            'payer.first_name' => ['required_if:payment_method,pse', 'nullable', 'string', 'max:60'],
-            'payer.last_name' => ['required_if:payment_method,pse', 'nullable', 'string', 'max:60'],
-            'payer.phone.area_code' => ['required_if:payment_method,pse', 'nullable', 'digits_between:1,4'],
-            'payer.phone.number' => ['required_if:payment_method,pse', 'nullable', 'digits_between:7,10'],
-            'payer.address.zip_code' => ['required_if:payment_method,pse', 'nullable', 'string', 'max:10'],
-            'payer.address.street_name' => ['required_if:payment_method,pse', 'nullable', 'string', 'max:100'],
-            'payer.address.street_number' => ['required_if:payment_method,pse', 'nullable', 'string', 'max:20'],
-            'payer.address.neighborhood' => ['required_if:payment_method,pse', 'nullable', 'string', 'max:60'],
-            'payer.address.city' => ['required_if:payment_method,pse', 'nullable', 'string', 'max:60'],
-            'payer.address.federal_unit' => ['required_if:payment_method,pse', 'nullable', 'string', 'max:60'],
         ]);
 
-        $user = $request->user();
-        $paymentData = $validated['payment_method'] === 'card'
-            ? $this->cardPaymentData($validated, $user->email)
-            : $this->psePaymentData($validated, $user->email, $request->ip());
+        $paymentUrl = $this->payments->checkoutUrlFor(
+            $request->user(),
+            $validated['reference'],
+            $this->frontendRedirect->allowed($validated['return_url'] ?? null) ?? route('payment.return'),
+        );
 
-        $idempotencyKey = (string) $request->header('X-Idempotency-Key');
+        abort_if($paymentUrl === null, 404, 'No encontramos un pago pendiente con esa referencia.');
 
-        // La idempotency key solo protege los reintentos con la MISMA key: dos
-        // pestañas (o un doble envío sin key) podrían cobrar dos veces la
-        // misma referencia. Un intento a la vez por referencia.
-        $lock = Cache::lock('payments:reference:'.$validated['reference'], 60);
+        return response()->json(['data' => [
+            'reference' => $validated['reference'],
+            'payment_url' => $paymentUrl,
+        ]], 201);
+    }
 
-        if (! $lock->get()) {
-            abort(409, 'Ya hay un pago en proceso para esta referencia. Espera unos segundos y revisa su estado.');
+    /**
+     * Estado de una transacción de Wompi del usuario (al volver del Web
+     * Checkout llega como ?id=...). Se consulta directamente a Wompi y se
+     * aplica, por si el webhook aún no llegó. 404 si no es del usuario.
+     */
+    public function show(Request $request, string $transactionId): JsonResponse
+    {
+        if (! $this->wompi->enabled()) {
+            abort(404);
         }
 
         try {
-            $payment = $this->payments->pay(
-                $user,
-                $validated['reference'],
-                $paymentData,
-                Str::isUuid($idempotencyKey) ? $idempotencyKey : (string) Str::uuid(),
-            );
-        } catch (MPApiException $e) {
-            $this->abortForMercadoPagoError($e, $validated['reference']);
-        } catch (ConnectionException $e) {
+            $transaction = $this->wompi->findTransaction($transactionId);
+        } catch (ConnectionException|RequestException $e) {
             report($e);
-            abort(503, 'No pudimos conectar con Mercado Pago. Intenta de nuevo en unos minutos.');
-        } finally {
-            $lock->release();
+            abort(503, 'No pudimos consultar el pago en Wompi. Intenta de nuevo en unos segundos.');
         }
 
-        return response()->json(['data' => $this->summary($payment)], 201);
-    }
-
-    /**
-     * Estado de un pago de Mercado Pago del usuario (p. ej. al volver del
-     * banco en PSE). Se consulta directamente a Mercado Pago y se aplica,
-     * por si el webhook aún no llegó. 404 si el pago no es del usuario.
-     */
-    public function show(Request $request, string $paymentId): JsonResponse
-    {
-        if (! $this->mercadoPago->enabled()) {
+        if ($transaction === null || ! $this->payments->belongsTo($request->user(), (string) ($transaction['reference'] ?? ''))) {
             abort(404);
         }
 
-        $payment = $this->mercadoPago->findPayment($paymentId);
+        $this->payments->apply($transaction);
 
-        if ($payment === null || ! $this->payments->belongsTo($request->user(), (string) ($payment['external_reference'] ?? ''))) {
-            abort(404);
-        }
-
-        $this->payments->apply($payment);
-
-        return response()->json(['data' => $this->summary($payment)]);
+        return response()->json(['data' => $this->summary($transaction)]);
     }
 
     /**
-     * 401/403 de Mercado Pago significan credenciales inválidas o sin
-     * permisos (problema nuestro, no del comprador): 503 y log de error.
-     * Otro 4xx es un rechazo de los datos del pago (422); 5xx, caída (503).
-     */
-    private function abortForMercadoPagoError(MPApiException $e, string $reference): never
-    {
-        $statusCode = $e->getStatusCode();
-        $context = [
-            'reference' => $reference,
-            'status' => $statusCode,
-            'response' => $e->getApiResponse()->getContent(),
-        ];
-
-        if (in_array($statusCode, [401, 403], true)) {
-            Log::error('Mercado Pago rechazó nuestras credenciales al crear un pago. Revisa MERCADOPAGO_ACCESS_TOKEN.', $context);
-            abort(503, 'La pasarela de pagos no está disponible en este momento. Intenta de nuevo más tarde.');
-        }
-
-        Log::warning('Mercado Pago rechazó la creación del pago.', $context);
-
-        abort($statusCode >= 500 ? 503 : 422, 'Mercado Pago no pudo procesar el pago. Revisa los datos e intenta de nuevo.');
-    }
-
-    /**
-     * @param  array<string, mixed>  $validated
-     * @return array<string, mixed>
-     */
-    private function cardPaymentData(array $validated, string $fallbackEmail): array
-    {
-        $payer = ['email' => $validated['payer']['email'] ?? $fallbackEmail];
-
-        if (! empty($validated['payer']['identification']['number'])) {
-            $payer['identification'] = $validated['payer']['identification'];
-        }
-
-        return array_filter([
-            'payment_method_id' => $validated['card']['payment_method_id'],
-            'token' => $validated['card']['token'],
-            'installments' => (int) $validated['card']['installments'],
-            'issuer_id' => isset($validated['card']['issuer_id']) ? (int) $validated['card']['issuer_id'] : null,
-            'payer' => $payer,
-        ], fn ($value) => $value !== null);
-    }
-
-    /**
-     * Campos que Mercado Pago exige para PSE en Colombia.
+     * Solo lo que el frontend necesita; nunca la transacción completa (trae
+     * datos del pagador y del medio de pago).
      *
-     * @param  array<string, mixed>  $validated
-     * @return array<string, mixed>
+     * @param  array<string, mixed>  $transaction
+     * @return array{id: string|null, status: string, wompi_status: string|null, status_message: string|null, payment_method_type: string|null, reference: string|null}
      */
-    private function psePaymentData(array $validated, string $fallbackEmail, ?string $ipAddress): array
-    {
-        $payer = $validated['payer'];
-
-        return [
-            'payment_method_id' => 'pse',
-            // Al terminar en el banco, PSE devuelve al comprador aquí. Solo
-            // se acepta una URL del frontend configurado (sin open redirect).
-            'callback_url' => $this->frontendRedirect->allowed($validated['return_url'] ?? null) ?? route('payment.return'),
-            'payer' => [
-                'email' => $payer['email'] ?? $fallbackEmail,
-                'entity_type' => $validated['pse']['entity_type'],
-                'first_name' => $payer['first_name'],
-                'last_name' => $payer['last_name'],
-                'identification' => $payer['identification'],
-                'phone' => $payer['phone'],
-                'address' => $payer['address'],
-            ],
-            'additional_info' => ['ip_address' => $ipAddress],
-            'transaction_details' => ['financial_institution' => $validated['pse']['financial_institution']],
-        ];
-    }
-
-    /**
-     * Solo lo que el frontend necesita; nunca el pago completo de Mercado
-     * Pago (trae datos del pagador y de la tarjeta).
-     *
-     * @param  array<string, mixed>  $payment
-     * @return array{id: string|null, status: string|null, status_detail: string|null, payment_method_id: string|null, external_reference: string|null, redirect_url: string|null}
-     */
-    private function summary(array $payment): array
+    private function summary(array $transaction): array
     {
         return [
-            'id' => isset($payment['id']) ? (string) $payment['id'] : null,
-            'status' => $payment['status'] ?? null,
-            'status_detail' => $payment['status_detail'] ?? null,
-            'payment_method_id' => $payment['payment_method_id'] ?? null,
-            'external_reference' => $payment['external_reference'] ?? null,
-            // PSE: URL del banco a la que hay que redirigir al comprador.
-            'redirect_url' => data_get($payment, 'transaction_details.external_resource_url'),
+            'id' => isset($transaction['id']) ? (string) $transaction['id'] : null,
+            'status' => $this->wompi->internalStatus($transaction['status'] ?? null),
+            'wompi_status' => $transaction['status'] ?? null,
+            'status_message' => $transaction['status_message'] ?? null,
+            'payment_method_type' => $transaction['payment_method_type'] ?? null,
+            'reference' => $transaction['reference'] ?? null,
         ];
     }
 }

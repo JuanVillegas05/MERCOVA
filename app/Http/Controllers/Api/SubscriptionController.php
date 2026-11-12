@@ -28,7 +28,7 @@ class SubscriptionController extends Controller
     /**
      * Cambio de plan SIN pago: solo para volver al plan gratuito. Los planes
      * de pago se contratan por POST /api/subscriptions/checkout y se activan
-     * únicamente cuando Mercado Pago confirma el pago.
+     * únicamente cuando Wompi confirma el pago.
      *
      * Si el usuario tiene un plan pago vigente, no se corta: sigue hasta su
      * fecha de vencimiento (ya está pagado) y luego pasa al gratuito.

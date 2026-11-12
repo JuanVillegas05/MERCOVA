@@ -69,11 +69,13 @@ services:
         sync: false
       - key: MAIL_FROM_ADDRESS
         sync: false
-      - key: MERCADOPAGO_PUBLIC_KEY
+      - key: WOMPI_PUBLIC_KEY
         sync: false
-      - key: MERCADOPAGO_ACCESS_TOKEN
+      - key: WOMPI_PRIVATE_KEY
         sync: false
-      - key: MERCADOPAGO_WEBHOOK_SECRET
+      - key: WOMPI_INTEGRITY_SECRET
+        sync: false
+      - key: WOMPI_EVENTS_SECRET
         sync: false
       - key: MERCOVA_FRONTEND_URL
         sync: false

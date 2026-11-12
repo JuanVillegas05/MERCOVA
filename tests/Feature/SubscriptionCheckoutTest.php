@@ -9,17 +9,17 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
-use Tests\Concerns\FakesMercadoPago;
+use Tests\Concerns\FakesWompi;
 use Tests\TestCase;
 
 class SubscriptionCheckoutTest extends TestCase
 {
-    use FakesMercadoPago;
+    use FakesWompi;
     use RefreshDatabase;
 
-    public function test_checkout_returns_mercado_pago_url_without_changing_the_plan_yet(): void
+    public function test_checkout_returns_wompi_link_without_changing_the_plan_yet(): void
     {
-        $this->configureMercadoPago();
+        $this->configureWompi();
         $freePlan = MembershipPlan::factory()->free()->create();
         $proPlan = MembershipPlan::factory()->create(['price' => 29900]);
         $user = User::factory()->create();
@@ -33,16 +33,19 @@ class SubscriptionCheckoutTest extends TestCase
             ->assertJsonPath('data.payment.amount', '29900.00')
             ->assertJsonPath('data.starts', 'on_payment');
 
-        $this->assertStringStartsWith('https://www.mercadopago.com.co/checkout/', $response->json('data.payment_url'));
-        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/checkout/preferences')
-            && (float) $request['items'][0]['unit_price'] === 29900.0
-            && $request['external_reference'] === $response->json('data.payment.reference'));
+        $parameters = $this->wompiCheckoutParameters($response->json('data.payment_url'));
+        $this->assertSame('2990000', $parameters['amount-in-cents']);
+        $this->assertSame($response->json('data.payment.reference'), $parameters['reference']);
+        $this->assertSame(
+            hash('sha256', $parameters['reference'].'2990000COP'.self::WOMPI_INTEGRITY_SECRET),
+            $parameters['signature:integrity'],
+        );
         $this->assertSame($freePlan->id, $user->fresh()->currentPlan()->id);
     }
 
     public function test_repeated_checkout_reuses_the_pending_payment(): void
     {
-        $this->configureMercadoPago();
+        $this->configureWompi();
         $proPlan = MembershipPlan::factory()->create();
         $user = User::factory()->create();
 
@@ -53,7 +56,7 @@ class SubscriptionCheckoutTest extends TestCase
         $this->assertDatabaseCount('subscription_payments', 1);
     }
 
-    public function test_checkout_returns_503_when_mercado_pago_is_not_configured(): void
+    public function test_checkout_returns_503_when_wompi_is_not_configured(): void
     {
         $proPlan = MembershipPlan::factory()->create();
         $user = User::factory()->create();
@@ -72,7 +75,7 @@ class SubscriptionCheckoutTest extends TestCase
 
     public function test_checkout_rejects_the_free_plan(): void
     {
-        $this->configureMercadoPago();
+        $this->configureWompi();
         $freePlan = MembershipPlan::factory()->free()->create();
         $user = User::factory()->create();
 
@@ -85,7 +88,7 @@ class SubscriptionCheckoutTest extends TestCase
 
     public function test_approved_webhook_activates_the_paid_plan(): void
     {
-        $this->configureMercadoPago();
+        $this->configureWompi();
         $this->freezeTime();
         $freePlan = MembershipPlan::factory()->free()->create();
         $proPlan = MembershipPlan::factory()->create(['price' => 29900]);
@@ -93,7 +96,7 @@ class SubscriptionCheckoutTest extends TestCase
         $freeSubscription = Subscription::factory()->for($user)->for($freePlan, 'plan')->create(['ends_at' => null]);
         $payment = SubscriptionPayment::factory()->for($user)->for($proPlan, 'plan')->create(['amount' => 29900]);
 
-        $this->sendMercadoPagoPaymentNotification($payment->reference, 'approved', 29900, paymentId: '123')->assertOk();
+        $this->sendWompiTransactionEvent($payment->reference, 'APPROVED', 29900, transactionId: '123')->assertOk();
 
         $payment->refresh();
         $this->assertSame(SubscriptionPayment::STATUS_APPROVED, $payment->status);
@@ -106,14 +109,14 @@ class SubscriptionCheckoutTest extends TestCase
 
     public function test_replayed_approved_webhook_does_not_create_a_second_subscription(): void
     {
-        $this->configureMercadoPago();
+        $this->configureWompi();
         $proPlan = MembershipPlan::factory()->create(['price' => 29900]);
         $user = User::factory()->create();
         $payment = SubscriptionPayment::factory()->for($user)->for($proPlan, 'plan')->create(['amount' => 29900]);
 
-        $this->sendMercadoPagoPaymentNotification($payment->reference, 'approved', 29900)->assertOk();
-        $this->sendMercadoPagoPaymentNotification($payment->reference, 'approved', 29900)->assertOk();
-        $this->sendMercadoPagoPaymentNotification($payment->reference, 'rejected', 29900)->assertOk();
+        $this->sendWompiTransactionEvent($payment->reference, 'APPROVED', 29900)->assertOk();
+        $this->sendWompiTransactionEvent($payment->reference, 'APPROVED', 29900)->assertOk();
+        $this->sendWompiTransactionEvent($payment->reference, 'DECLINED', 29900)->assertOk();
 
         $this->assertSame(1, $user->subscriptions()->count());
         $this->assertSame(SubscriptionPayment::STATUS_APPROVED, $payment->fresh()->status);
@@ -121,12 +124,12 @@ class SubscriptionCheckoutTest extends TestCase
 
     public function test_declined_webhook_keeps_the_current_plan(): void
     {
-        $this->configureMercadoPago();
+        $this->configureWompi();
         $freePlan = MembershipPlan::factory()->free()->create();
         $user = User::factory()->create();
         $payment = SubscriptionPayment::factory()->for($user)->create(['amount' => 29900]);
 
-        $this->sendMercadoPagoPaymentNotification($payment->reference, 'rejected', 29900)->assertOk();
+        $this->sendWompiTransactionEvent($payment->reference, 'DECLINED', 29900)->assertOk();
 
         $this->assertSame('declined', $payment->fresh()->status);
         $this->assertSame($freePlan->id, $user->fresh()->currentPlan()->id);
@@ -134,11 +137,11 @@ class SubscriptionCheckoutTest extends TestCase
 
     public function test_approved_webhook_with_a_different_amount_does_not_activate_the_plan(): void
     {
-        $this->configureMercadoPago();
+        $this->configureWompi();
         $user = User::factory()->create();
         $payment = SubscriptionPayment::factory()->for($user)->create(['amount' => 29900]);
 
-        $this->sendMercadoPagoPaymentNotification($payment->reference, 'approved', 1)->assertOk();
+        $this->sendWompiTransactionEvent($payment->reference, 'APPROVED', 1)->assertOk();
 
         $this->assertSame(SubscriptionPayment::STATUS_AMOUNT_MISMATCH, $payment->fresh()->status);
         $this->assertSame(0, $user->subscriptions()->count());
@@ -146,13 +149,13 @@ class SubscriptionCheckoutTest extends TestCase
 
     public function test_webhook_with_invalid_signature_does_not_activate_the_plan(): void
     {
-        $this->configureMercadoPago();
+        $this->configureWompi();
         $user = User::factory()->create();
         $payment = SubscriptionPayment::factory()->for($user)->create(['amount' => 29900]);
 
-        $this->fakeMercadoPagoPayment('321', $payment->reference, 'approved', 29900);
+        $this->fakeWompiTransaction('321', $payment->reference, 'APPROVED', 29900);
 
-        $this->sendMercadoPagoWebhook('321', secret: 'forged')->assertUnauthorized();
+        $this->sendWompiEvent('321', secret: 'forged')->assertUnauthorized();
 
         $this->assertSame(SubscriptionPayment::STATUS_PENDING, $payment->fresh()->status);
     }
@@ -176,7 +179,7 @@ class SubscriptionCheckoutTest extends TestCase
 
     public function test_approved_renewal_starts_when_the_current_period_ends(): void
     {
-        $this->configureMercadoPago();
+        $this->configureWompi();
         $proPlan = MembershipPlan::factory()->create(['price' => 29900]);
         $user = User::factory()->create();
         $current = $this->paidSubscription($user, $proPlan, startedDaysAgo: 20, endsInDays: 10);
@@ -187,7 +190,7 @@ class SubscriptionCheckoutTest extends TestCase
             ->assertJsonPath('data.payment.change_type', SubscriptionPayment::CHANGE_RENEWAL)
             ->assertJsonPath('data.starts', 'at_period_end');
 
-        $this->sendMercadoPagoPaymentNotification($checkout->json('data.payment.reference'), 'approved', 29900)->assertOk();
+        $this->sendWompiTransactionEvent($checkout->json('data.payment.reference'), 'APPROVED', 29900)->assertOk();
 
         $renewal = SubscriptionPayment::where('reference', $checkout->json('data.payment.reference'))->firstOrFail()->subscription;
         $this->assertTrue($renewal->starts_at->equalTo($current->ends_at));
@@ -199,7 +202,7 @@ class SubscriptionCheckoutTest extends TestCase
 
     public function test_downgrade_is_scheduled_and_blocks_further_changes_until_it_starts(): void
     {
-        $this->configureMercadoPago();
+        $this->configureWompi();
         $proPlan = MembershipPlan::factory()->create(['tier' => 1, 'price' => 29900]);
         $premiumPlan = MembershipPlan::factory()->premium()->create();
         $user = User::factory()->create();
@@ -208,7 +211,7 @@ class SubscriptionCheckoutTest extends TestCase
         $checkout = $this->actingAs($user, 'sanctum')
             ->postJson('/api/subscriptions/checkout', ['membership_plan_id' => $proPlan->id])
             ->assertJsonPath('data.payment.change_type', SubscriptionPayment::CHANGE_DOWNGRADE);
-        $this->sendMercadoPagoPaymentNotification($checkout->json('data.payment.reference'), 'approved', 29900)->assertOk();
+        $this->sendWompiTransactionEvent($checkout->json('data.payment.reference'), 'APPROVED', 29900)->assertOk();
 
         $this->actingAs($user, 'sanctum')
             ->getJson('/api/me/subscription')
@@ -238,7 +241,7 @@ class SubscriptionCheckoutTest extends TestCase
 
     public function test_checkout_returns_user_to_frontend_only_when_url_is_allowed(): void
     {
-        $this->configureMercadoPago();
+        $this->configureWompi();
         config(['mercova.frontend_url' => 'https://app.mercova.test']);
         $proPlan = MembershipPlan::factory()->create();
         $user = User::factory()->create();
@@ -254,20 +257,24 @@ class SubscriptionCheckoutTest extends TestCase
 
         $allowed->assertCreated();
         $foreign->assertCreated();
-        $backUrls = Http::recorded(fn (Request $request) => str_ends_with($request->url(), '/checkout/preferences'))
-            ->map(fn ($pair) => $pair[0]['back_urls']['success'])
-            ->all();
-        $this->assertSame(['https://app.mercova.test/planes/resultado', route('payment.return')], $backUrls);
+        $this->assertSame(
+            'https://app.mercova.test/planes/resultado',
+            $this->wompiCheckoutParameters($allowed->json('data.payment_url'))['redirect-url'],
+        );
+        $this->assertSame(
+            route('payment.return'),
+            $this->wompiCheckoutParameters($foreign->json('data.payment_url'))['redirect-url'],
+        );
     }
 
     public function test_polling_a_pending_payment_activates_the_plan_when_the_webhook_was_lost(): void
     {
-        $this->configureMercadoPago();
+        $this->configureWompi();
         $proPlan = MembershipPlan::factory()->create(['price' => 29900]);
         $user = User::factory()->create();
         $payment = SubscriptionPayment::factory()->for($user)->for($proPlan, 'plan')->create(['amount' => 29900]);
-        $this->fakeMercadoPagoPayment('901', $payment->reference, 'approved', 29900);
-        $this->fakeMercadoPagoPayment('902', $payment->reference, 'rejected', 29900);
+        $this->fakeWompiTransaction('901', $payment->reference, 'APPROVED', 29900);
+        $this->fakeWompiTransaction('902', $payment->reference, 'DECLINED', 29900);
 
         $this->actingAs($user, 'sanctum')
             ->getJson("/api/subscriptions/payments/{$payment->id}")
@@ -278,20 +285,20 @@ class SubscriptionCheckoutTest extends TestCase
         $this->assertSame($proPlan->id, $user->fresh()->currentPlan()->id);
     }
 
-    public function test_reconcile_command_applies_mercado_pago_results_and_expires_abandoned_payments(): void
+    public function test_reconcile_command_applies_wompi_results_and_expires_abandoned_payments(): void
     {
-        $this->configureMercadoPago();
+        $this->configureWompi();
         $user = User::factory()->create();
         $declined = SubscriptionPayment::factory()->for($user)->create(['created_at' => now()->subHour()]);
         $abandoned = SubscriptionPayment::factory()->for($user)->create(['created_at' => now()->subDays(3)]);
-        $this->fakeMercadoPagoPayment('911', $declined->reference, 'rejected', 29900);
+        $this->fakeWompiTransaction('911', $declined->reference, 'DECLINED', 29900);
 
         $this->artisan('subscriptions:reconcile-payments')->assertSuccessful();
 
         $this->assertSame('declined', $declined->fresh()->status);
         $this->assertSame(SubscriptionPayment::STATUS_EXPIRED, $abandoned->fresh()->status);
-        Http::assertSent(fn (Request $request) => $request->hasHeader('Authorization', 'Bearer '.self::MERCADOPAGO_ACCESS_TOKEN)
-            && str_contains($request->url(), 'external_reference='.$declined->reference));
+        Http::assertSent(fn (Request $request) => $request->hasHeader('Authorization', 'Bearer '.self::WOMPI_PRIVATE_KEY)
+            && str_contains($request->url(), 'reference='.$declined->reference));
     }
 
     /**

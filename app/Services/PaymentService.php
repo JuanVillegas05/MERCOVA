@@ -8,22 +8,20 @@ use App\Models\User;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use MercadoPago\Exceptions\MPApiException;
 
 /**
- * Cobro de una referencia nuestra (pedido, carrito o plan) con Mercado Pago
- * y aplicación de su resultado.
+ * Cobro de una referencia nuestra (pedido, carrito o plan) con Wompi y
+ * aplicación de su resultado.
  *
- * Regla de estados: en Mercado Pago una misma referencia puede tener varios
+ * Regla de estados: en Wompi una misma referencia puede tener varios
  * intentos (tarjeta rechazada y luego aprobada, PSE abandonado y
  * reintentado). Por eso:
  * - El último intento se refleja en `payment_status` / `status` del pago,
  *   pero un rechazo NO cancela el pedido ni repone stock: el comprador puede
  *   reintentar. Los abandonados los cancela `orders:cancel-stale`.
- * - "approved" es definitivo: ningún evento posterior lo degrada (un
- *   reembolso o contracargo solo se registra en el log para soporte).
+ * - "approved" es definitivo: ningún evento posterior lo degrada.
  */
-class MercadoPagoPaymentService
+class PaymentService
 {
     /** Estados de pago de un pedido que aún admiten un nuevo intento. */
     public const RETRYABLE_ORDER_PAYMENT_STATUSES = ['pending', 'declined', 'voided'];
@@ -32,7 +30,7 @@ class MercadoPagoPaymentService
     public const RETRYABLE_SUBSCRIPTION_PAYMENT_STATUSES = [SubscriptionPayment::STATUS_PENDING, 'declined', 'voided'];
 
     public function __construct(
-        private readonly MercadoPagoService $mercadoPago,
+        private readonly WompiService $wompi,
         private readonly SubscriptionCheckoutService $subscriptionCheckout,
     ) {}
 
@@ -111,50 +109,39 @@ class MercadoPagoPaymentService
     }
 
     /**
-     * Crea el pago en Mercado Pago (Checkout API) y aplica de inmediato su
-     * resultado: una tarjeta suele quedar aprobada o rechazada en la misma
-     * respuesta; PSE queda "pending" hasta que el comprador termina en su banco.
-     *
-     * @param  array<string, mixed>  $paymentData  Campos ya validados por PaymentController.
-     * @return array<string, mixed> El pago tal como lo devolvió Mercado Pago.
-     *
-     * @throws MPApiException
+     * Enlace del Web Checkout de Wompi para una referencia del usuario, por
+     * el monto que dice la base de datos. Null si ya no se puede pagar.
      */
-    public function pay(User $user, string $reference, array $paymentData, string $idempotencyKey): array
+    public function checkoutUrlFor(User $user, string $reference, string $redirectUrl): ?string
     {
-        $payable = $this->payableFor($user, $reference);
+        $payable = $this->findPayable($user, $reference);
 
-        $payment = $this->mercadoPago->createPayment([
-            ...$paymentData,
-            'transaction_amount' => $payable['amount'],
-            'description' => $payable['description'],
-            'external_reference' => $payable['reference'],
-        ], $idempotencyKey);
+        if ($payable === null) {
+            return null;
+        }
 
-        $this->apply($payment);
-
-        return $payment;
+        return $this->wompi->checkoutUrl($payable['reference'], $payable['amount'], $redirectUrl, $user->email);
     }
 
     /**
-     * Aplica un pago de Mercado Pago (obtenido de su API, nunca del cuerpo
-     * de un webhook) al pedido/carrito o al pago de plan de su referencia.
-     * Es idempotente: Mercado Pago reintenta las notificaciones.
+     * Aplica una transacción de Wompi (obtenida de su API) al pedido/carrito
+     * o al pago de plan de su referencia. Es idempotente: Wompi reintenta
+     * los eventos.
      *
-     * @param  array<string, mixed>  $payment
+     * @param  array<string, mixed>  $transaction
      */
-    public function apply(array $payment): void
+    public function apply(array $transaction): void
     {
-        $reference = (string) ($payment['external_reference'] ?? '');
+        $reference = (string) ($transaction['reference'] ?? '');
 
         if ($reference === '') {
             return;
         }
 
-        $status = $this->mercadoPago->internalStatus($payment['status'] ?? null);
-        $transactionId = isset($payment['id']) ? (string) $payment['id'] : null;
-        $amount = isset($payment['transaction_amount']) && ($payment['currency_id'] ?? 'COP') === 'COP'
-            ? (float) $payment['transaction_amount']
+        $status = $this->wompi->internalStatus($transaction['status'] ?? null);
+        $transactionId = isset($transaction['id']) ? (string) $transaction['id'] : null;
+        $amount = isset($transaction['amount_in_cents']) && ($transaction['currency'] ?? 'COP') === 'COP'
+            ? ((int) $transaction['amount_in_cents']) / 100
             : null;
 
         $subscriptionPayment = SubscriptionPayment::query()->where('reference', $reference)->first();
@@ -168,7 +155,7 @@ class MercadoPagoPaymentService
         $orderIds = Order::query()->where('payment_reference', $reference)->pluck('id');
 
         if ($orderIds->isEmpty()) {
-            Log::warning("Pago de Mercado Pago {$transactionId} para una referencia que no existe: {$reference}");
+            Log::warning("Transacción de Wompi {$transactionId} para una referencia que no existe: {$reference}");
 
             return;
         }
@@ -182,17 +169,17 @@ class MercadoPagoPaymentService
     private function applyToOrders(Collection $orderIds, string $reference, string $status, ?string $transactionId, ?float $amount): void
     {
         DB::transaction(function () use ($orderIds, $reference, $status, $transactionId, $amount) {
-            // Lock de todos los pedidos de la referencia: si Mercado Pago
-            // reintenta el mismo aviso (o llegan dos casi a la vez), dos
-            // requests no pueden aplicar el mismo cambio dos veces.
+            // Lock de todos los pedidos de la referencia: si Wompi reintenta el
+            // mismo evento (o llegan dos casi a la vez), dos requests no pueden
+            // aplicar el mismo cambio dos veces.
             $orders = Order::query()->whereKey($orderIds)->lockForUpdate()->get();
 
             if ($status === 'approved') {
-                $expected = $this->mercadoPago->amountInCents((float) $orders->sum('total'));
-                $received = $amount !== null ? $this->mercadoPago->amountInCents($amount) : null;
+                $expected = $this->wompi->amountInCents((float) $orders->sum('total'));
+                $received = $amount !== null ? $this->wompi->amountInCents($amount) : null;
 
                 if ($received !== $expected) {
-                    Log::error("Pago de Mercado Pago {$transactionId} aprobado por un monto distinto al del pedido ({$reference}).", [
+                    Log::error("Transacción de Wompi {$transactionId} aprobada por un monto distinto al del pedido ({$reference}).", [
                         'expected_cents' => $expected,
                         'received_cents' => $received,
                     ]);
@@ -208,10 +195,6 @@ class MercadoPagoPaymentService
 
             foreach ($orders as $order) {
                 if ($order->payment_status === 'approved') {
-                    if ($status === 'refunded') {
-                        Log::warning("Mercado Pago reporta reembolso/contracargo del pedido #{$order->id} ya pagado ({$transactionId}). Requiere revisión manual.");
-                    }
-
                     continue;
                 }
 
@@ -234,7 +217,7 @@ class MercadoPagoPaymentService
 
                 // Intento no aprobado: solo se refleja si el pedido sigue
                 // abierto, para que el comprador vea el rechazo y reintente.
-                if ($order->status === 'pending' && $order->payment_status !== 'amount_mismatch' && $status !== 'refunded') {
+                if ($order->status === 'pending' && $order->payment_status !== 'amount_mismatch') {
                     $order->update([
                         'payment_status' => $status,
                         'payment_transaction_id' => $transactionId,

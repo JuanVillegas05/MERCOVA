@@ -9,7 +9,6 @@ use App\Http\Controllers\Api\CartController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\FavoriteController;
 use App\Http\Controllers\Api\MembershipPlanController;
-use App\Http\Controllers\Api\MercadoPagoWebhookController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\PaymentController;
@@ -20,6 +19,7 @@ use App\Http\Controllers\Api\ServiceController;
 use App\Http\Controllers\Api\SubscriptionCheckoutController;
 use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\UploadController;
+use App\Http\Controllers\Api\WompiWebhookController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', fn () => ['status' => 'ok']);
@@ -27,13 +27,13 @@ Route::get('/payment-methods', fn () => response()->json(['data' => config('merc
 // Qué botones de login social mostrar: { google: bool, apple: bool }.
 Route::get('/auth/providers', fn () => response()->json(['data' => config('mercova.social_login')]));
 
-// Pública (sin auth:sanctum a propósito): Mercado Pago no manda un token
-// nuestro. Firma cada aviso (header x-signature, MERCADOPAGO_WEBHOOK_SECRET) y
-// el estado del pago se consulta a su API. Ver MercadoPagoWebhookController.
-Route::post('/webhooks/mercadopago', [MercadoPagoWebhookController::class, 'handle'])
+// Pública (sin auth:sanctum a propósito): Wompi no manda un token nuestro.
+// Cada evento trae un checksum (WOMPI_EVENTS_SECRET) y la transacción se
+// vuelve a consultar a su API. Ver WompiWebhookController.
+Route::post('/webhooks/wompi', [WompiWebhookController::class, 'handle'])
     ->middleware('throttle:120,1')
-    ->name('webhooks.mercadopago');
-// Public key + bancos de PSE para pintar el checkout (nada secreto).
+    ->name('webhooks.wompi');
+// Estado de la pasarela y llave pública de Wompi (nada secreto).
 Route::get('/payments/config', [PaymentController::class, 'config']);
 
 Route::get('/categories', [CategoryController::class, 'index']);
@@ -74,8 +74,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me/subscription', [SubscriptionController::class, 'show']);
     Route::put('/me/subscription', [SubscriptionController::class, 'update']);
 
-    // Planes de pago: el checkout solo crea el intento y la URL de Mercado
-    // Pago; el plan se activa cuando llega el webhook (/api/webhooks/mercadopago).
+    // Planes de pago: el checkout solo crea el intento y el enlace de Wompi;
+    // el plan se activa cuando llega el webhook (/api/webhooks/wompi).
     Route::get('/subscriptions/checkout/preview', [SubscriptionCheckoutController::class, 'preview']);
     Route::post('/subscriptions/checkout', [SubscriptionCheckoutController::class, 'store'])->middleware('throttle:10,1');
     Route::get('/subscriptions/payments', [SubscriptionCheckoutController::class, 'index']);
@@ -125,10 +125,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/orders/{order}/payment', [OrderController::class, 'paymentUrl']);
     Route::post('/orders/{order}/cancel', [OrderController::class, 'cancel']);
 
-    // Checkout propio con Mercado Pago (tarjeta tokenizada o PSE) para
+    // Enlace del Web Checkout de Wompi y estado de una transacción, para
     // cualquier referencia de pedido, carrito o plan del usuario.
     Route::post('/payments', [PaymentController::class, 'store'])->middleware('throttle:10,1');
-    Route::get('/payments/{paymentId}', [PaymentController::class, 'show'])->whereNumber('paymentId');
+    Route::get('/payments/{transactionId}', [PaymentController::class, 'show'])->where('transactionId', '[A-Za-z0-9-]+');
 
     Route::get('/my-business', [BusinessController::class, 'me']);
     Route::post('/businesses', [BusinessController::class, 'store']);

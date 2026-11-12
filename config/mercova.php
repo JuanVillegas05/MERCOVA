@@ -63,22 +63,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Pasarela de pagos (Mercado Pago)
+    | Pasarela de pagos (Wompi)
     |--------------------------------------------------------------------------
     |
-    | Credenciales de https://www.mercadopago.com.co/developers/panel/app.
-    | Sin public key + access token, el checkout con pago real queda
-    | deshabilitado pero el resto de la app funciona. El modo pruebas o
-    | producción lo deciden las propias credenciales (de prueba o reales).
+    | Llaves de https://comercios.wompi.co → Desarrolladores. Sin llave
+    | pública + secreto de integridad, el checkout con pago real queda
+    | deshabilitado pero el resto de la app funciona. El ambiente (sandbox o
+    | producción) lo decide la propia llave pública (pub_test_ / pub_prod_).
     |
-    | webhook_secret: "clave secreta" de Webhooks en el panel. Con ella se
-    | valida el header x-signature de cada notificación.
+    | - private_key: consulta de transacciones por referencia (conciliación).
+    | - integrity_secret: firma "signature:integrity" del Web Checkout, para
+    |   que nadie pueda cambiar el monto del enlace de pago.
+    | - events_secret: valida el checksum de cada evento del webhook.
     |
     */
-    'mercadopago' => [
-        'public_key' => env('MERCADOPAGO_PUBLIC_KEY'),
-        'access_token' => env('MERCADOPAGO_ACCESS_TOKEN'),
-        'webhook_secret' => env('MERCADOPAGO_WEBHOOK_SECRET'),
+    'wompi' => [
+        'public_key' => env('WOMPI_PUBLIC_KEY'),
+        'private_key' => env('WOMPI_PRIVATE_KEY'),
+        'integrity_secret' => env('WOMPI_INTEGRITY_SECRET'),
+        'events_secret' => env('WOMPI_EVENTS_SECRET'),
     ],
 
     /*

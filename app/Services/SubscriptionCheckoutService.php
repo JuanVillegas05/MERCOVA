@@ -11,17 +11,16 @@ use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
- * Cobro de planes de pago con Mercado Pago.
+ * Cobro de planes de pago con Wompi.
  *
  * Flujo:
  * 1. quote() decide qué tipo de cambio es (alta, upgrade, renovación o
  *    downgrade) y cuánto cobrar.
  * 2. checkout() registra un SubscriptionPayment "pending" con una referencia
- *    SUB-... y devuelve la URL de Checkout Pro. El frontend también puede
- *    cobrar esa referencia en su propio formulario (POST /api/payments).
- *    La suscripción NO cambia aún.
- * 3. Mercado Pago avisa a POST /api/webhooks/mercadopago; si la referencia es
- *    SUB-..., MercadoPagoPaymentService delega en handlePaymentEvent(), que
+ *    SUB-... y devuelve el enlace del Web Checkout de Wompi. La suscripción
+ *    NO cambia aún.
+ * 3. Wompi avisa a POST /api/webhooks/wompi; si la referencia es SUB-...,
+ *    PaymentService delega en handlePaymentEvent(), que
  *    activa (o programa) la suscripción solo si el pago quedó aprobado y el
  *    monto cobrado coincide con el registrado.
  *
@@ -32,7 +31,7 @@ use Throwable;
 class SubscriptionCheckoutService
 {
     public function __construct(
-        private readonly MercadoPagoService $mercadoPago,
+        private readonly WompiService $wompi,
         private readonly SubscriptionService $subscriptions,
         private readonly FrontendRedirect $frontendRedirect,
     ) {}
@@ -82,13 +81,13 @@ class SubscriptionCheckoutService
     }
 
     /**
-     * Crea (o reutiliza) el intento de pago y devuelve la URL de Checkout Pro.
+     * Crea (o reutiliza) el intento de pago y devuelve el enlace de Wompi.
      *
      * @return array{payment: SubscriptionPayment, payment_url: string}
      */
     public function checkout(User $user, MembershipPlan $plan, ?string $returnUrl = null): array
     {
-        if (! $this->mercadoPago->enabled()) {
+        if (! $this->wompi->enabled()) {
             abort(503, 'La pasarela de pagos no está configurada todavía.');
         }
 
@@ -111,28 +110,21 @@ class SubscriptionCheckoutService
             'user_id' => $user->id,
             'membership_plan_id' => $plan->id,
             'change_type' => $quote['change_type'],
-            'reference' => $this->mercadoPago->generateReference('SUB'),
+            'reference' => $this->wompi->generateReference('SUB'),
             'amount' => $quote['amount'],
             'credit_amount' => $quote['credit_amount'],
             'currency' => 'COP',
             'status' => SubscriptionPayment::STATUS_PENDING,
         ]);
 
-        try {
-            $paymentUrl = $this->mercadoPago->createPreference(
-                reference: $payment->reference,
-                title: 'Plan '.$plan->name,
-                amount: (float) $payment->amount,
-                // Mercado Pago agrega ?payment_id=...&status=... al volver. Solo
-                // se acepta una URL del frontend configurado; si no, la propia.
-                returnUrl: $this->frontendRedirect->allowed($returnUrl) ?? route('payment.return'),
-                payerEmail: $user->email,
-            );
-        } catch (Throwable $e) {
-            // El intento queda "pending" y se reutiliza al reintentar.
-            report($e);
-            abort(503, 'No pudimos conectar con Mercado Pago. Intenta de nuevo en unos minutos.');
-        }
+        // Wompi agrega ?id={transacción} al volver. Solo se acepta una URL del
+        // frontend configurado; si no, la página de retorno propia.
+        $paymentUrl = $this->wompi->checkoutUrl(
+            reference: $payment->reference,
+            amount: (float) $payment->amount,
+            redirectUrl: $this->frontendRedirect->allowed($returnUrl) ?? route('payment.return'),
+            customerEmail: $user->email,
+        );
 
         return [
             'payment' => $payment->load('plan'),
@@ -141,36 +133,39 @@ class SubscriptionCheckoutService
     }
 
     /**
-     * Consulta a Mercado Pago el estado real de un pago aún abierto y lo
-     * aplica. Cubre el caso de un webhook perdido o demorado: lo usa el
-     * comando programado y el endpoint que el frontend consulta al volver de
-     * la pasarela. Lo que responde la API (autenticada con nuestro access
-     * token) es tan confiable como el propio webhook.
+     * Consulta a Wompi el estado real de un pago aún abierto y lo aplica.
+     * Cubre el caso de un webhook perdido o demorado: lo usa el comando
+     * programado y el endpoint que el frontend consulta al volver de la
+     * pasarela. Lo que responde la API (autenticada con nuestra llave
+     * privada) es tan confiable como el propio webhook.
      */
     public function reconcile(SubscriptionPayment $payment): SubscriptionPayment
     {
-        if (! $this->mercadoPago->enabled() || ! in_array($payment->status, MercadoPagoPaymentService::RETRYABLE_SUBSCRIPTION_PAYMENT_STATUSES, true)) {
+        if (! $this->wompi->enabled() || ! in_array($payment->status, PaymentService::RETRYABLE_SUBSCRIPTION_PAYMENT_STATUSES, true)) {
             return $payment;
         }
 
         try {
-            $attempts = collect($this->mercadoPago->paymentsByReference($payment->reference));
+            // Del más reciente al más viejo.
+            $attempts = collect($this->wompi->transactionsByReference($payment->reference))
+                ->sortByDesc('created_at')
+                ->values();
         } catch (Throwable $e) {
-            // Mercado Pago no responde: se reintenta en la próxima pasada.
+            // Wompi no responde: se reintenta en la próxima pasada.
             report($e);
 
             return $payment;
         }
 
         // Un aprobado gana siempre; si no, cuenta el intento más reciente.
-        $attempt = $attempts->firstWhere('status', 'approved') ?? $attempts->first();
+        $attempt = $attempts->firstWhere('status', 'APPROVED') ?? $attempts->first();
 
         if ($attempt) {
             $this->handlePaymentEvent(
                 $payment,
-                $this->mercadoPago->internalStatus($attempt['status'] ?? null),
+                $this->wompi->internalStatus($attempt['status'] ?? null),
                 isset($attempt['id']) ? (string) $attempt['id'] : null,
-                isset($attempt['transaction_amount']) ? (float) $attempt['transaction_amount'] : null,
+                isset($attempt['amount_in_cents']) ? ((int) $attempt['amount_in_cents']) / 100 : null,
             );
         }
 
@@ -178,9 +173,9 @@ class SubscriptionCheckoutService
     }
 
     /**
-     * Aplica el resultado de un pago de Mercado Pago a un pago de plan
-     * ($status ya traducido por MercadoPagoService::internalStatus()). Es
-     * idempotente: Mercado Pago reintenta los webhooks y un pago ya aprobado
+     * Aplica el resultado de un pago de Wompi a un pago de plan ($status ya
+     * traducido por WompiService::internalStatus()). Es idempotente: Wompi
+     * reintenta los eventos y un pago ya aprobado
      * no se vuelve a aplicar ni se degrada. Un rechazo deja el pago abierto
      * a un nuevo intento (otra tarjeta, otro banco).
      */
@@ -203,8 +198,8 @@ class SubscriptionCheckoutService
 
             // Si el monto cobrado no coincide con lo que cotizamos, no se
             // activa nada y queda para revisión manual.
-            $expectedCents = $this->mercadoPago->amountInCents((float) $payment->amount);
-            $receivedCents = $amount !== null ? $this->mercadoPago->amountInCents($amount) : null;
+            $expectedCents = $this->wompi->amountInCents((float) $payment->amount);
+            $receivedCents = $amount !== null ? $this->wompi->amountInCents($amount) : null;
 
             if ($receivedCents !== $expectedCents) {
                 Log::error("Pago de suscripción {$payment->reference} aprobado por un monto distinto al esperado.", [

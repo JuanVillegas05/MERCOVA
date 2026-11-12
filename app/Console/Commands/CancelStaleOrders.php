@@ -3,7 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Order;
-use App\Services\MercadoPagoPaymentService;
+use App\Services\PaymentService;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
@@ -24,7 +24,7 @@ class CancelStaleOrders extends Command
 
         $staleOrderIds = Order::query()
             ->where('status', 'pending')
-            ->whereIn('payment_status', MercadoPagoPaymentService::RETRYABLE_ORDER_PAYMENT_STATUSES)
+            ->whereIn('payment_status', PaymentService::RETRYABLE_ORDER_PAYMENT_STATUSES)
             ->where('created_at', '<', $cutoff)
             ->pluck('id');
 
@@ -32,7 +32,7 @@ class CancelStaleOrders extends Command
             DB::transaction(function () use ($orderId) {
                 $order = Order::query()->lockForUpdate()->find($orderId);
 
-                if (! $order || $order->status !== 'pending' || ! in_array($order->payment_status, MercadoPagoPaymentService::RETRYABLE_ORDER_PAYMENT_STATUSES, true)) {
+                if (! $order || $order->status !== 'pending' || ! in_array($order->payment_status, PaymentService::RETRYABLE_ORDER_PAYMENT_STATUSES, true)) {
                     return;
                 }
 

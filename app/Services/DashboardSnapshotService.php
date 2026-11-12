@@ -34,7 +34,7 @@ class DashboardSnapshotService
         $rentalsInRange = Rental::query()->when($start, fn ($q) => $q->where('created_at', '>=', $start));
 
         // "Dinero ingresado": ventas registradas que no se cancelaron. No se
-        // limita a `payment_status: approved` porque la pasarela (Mercado Pago) es
+        // limita a `payment_status: approved` porque la pasarela (Wompi) es
         // opcional — muchos pedidos siguen su ciclo de vida por fuera de ella
         // (pago contra entrega, efectivo, etc.) y el panel debe reflejar la
         // operación real de la tienda, no solo lo cobrado por la pasarela.

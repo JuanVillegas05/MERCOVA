@@ -118,7 +118,7 @@ class BusinessController extends Controller
         $expiresAt = $plan->billing_period === 'anual' ? now()->addYear() : now()->addMonth();
 
         // Solo el admin asigna planes sin pago. El dueño puede vincular un
-        // plan gratuito o el plan de pago que ya contrató (y Mercado Pago
+        // plan gratuito o el plan de pago que ya contrató (y Wompi
         // confirmó) por POST /api/subscriptions/checkout, hasta que venza.
         if ($user->role !== 'admin') {
             if (! $plan->is_active) {
