@@ -102,6 +102,17 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Tareas programadas desde un cron externo
+    |--------------------------------------------------------------------------
+    |
+    | Secreto que debe mandar el cron externo (Authorization: Bearer ...) a
+    | POST /api/cron/run. Sin él, el endpoint responde 404.
+    |
+    */
+    'cron_secret' => env('MERCOVA_CRON_SECRET'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Login social
     |--------------------------------------------------------------------------
     |

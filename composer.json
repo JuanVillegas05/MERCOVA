@@ -16,7 +16,6 @@
         "laravel/socialite": "^5.31",
         "laravel/tinker": "^3.0",
         "maatwebsite/excel": "*",
-        "mercadopago/dx-php": "^3.16",
         "resend/resend-php": "^1.16",
         "socialiteproviders/apple": "^6.1"
     },

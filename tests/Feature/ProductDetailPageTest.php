@@ -49,7 +49,7 @@ class ProductDetailPageTest extends TestCase
 
     public function test_product_detail_page_renders_for_a_valid_slug(): void
     {
-        $response = $this->get('/producto/cualquier-slug');
+        $response = $this->withoutVite()->get('/producto/cualquier-slug');
 
         $response->assertOk();
     }

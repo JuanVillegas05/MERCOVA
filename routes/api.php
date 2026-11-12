@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\RentalController;
 use App\Http\Controllers\Api\ReviewController;
+use App\Http\Controllers\Api\ScheduledTasksController;
 use App\Http\Controllers\Api\ServiceController;
 use App\Http\Controllers\Api\SubscriptionCheckoutController;
 use App\Http\Controllers\Api\SubscriptionController;
@@ -33,6 +34,12 @@ Route::get('/auth/providers', fn () => response()->json(['data' => config('merco
 Route::post('/webhooks/wompi', [WompiWebhookController::class, 'handle'])
     ->middleware('throttle:120,1')
     ->name('webhooks.wompi');
+// Tareas programadas disparadas por un cron externo (Render free no corre
+// schedule:run). Protegido con MERCOVA_CRON_SECRET; ver ScheduledTasksController.
+Route::post('/cron/run', ScheduledTasksController::class)
+    ->middleware('throttle:6,1')
+    ->name('cron.run');
+
 // Estado de la pasarela y llave pública de Wompi (nada secreto).
 Route::get('/payments/config', [PaymentController::class, 'config']);
 
