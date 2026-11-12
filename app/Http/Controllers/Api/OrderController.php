@@ -9,6 +9,7 @@ use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\User;
 use App\Services\CommissionCalculator;
+use App\Services\FrontendRedirect;
 use App\Services\PaymentService;
 use App\Services\WompiService;
 use Illuminate\Http\Request;
@@ -21,6 +22,7 @@ class OrderController extends Controller
         private readonly CommissionCalculator $commission,
         private readonly WompiService $wompi,
         private readonly PaymentService $payments,
+        private readonly FrontendRedirect $frontendRedirect,
     ) {}
 
     /**
@@ -31,16 +33,20 @@ class OrderController extends Controller
      * puede pagar. Se genera localmente (no llama a Wompi), así que no falla
      * por red.
      *
-     * El frontend también puede pedir el enlace con su propia URL de retorno
-     * (POST /api/payments).
+     * Wompi devuelve al comprador a `return_url` (parámetro opcional de la
+     * petición) solo si es del frontend configurado; si no, a la página de
+     * retorno propia de este backend.
      */
-    private function paymentUrlFor(Order $order): ?string
+    private function paymentUrlFor(Order $order, Request $request): ?string
     {
         if (! $this->wompi->enabled() || ! $order->payment_reference) {
             return null;
         }
 
-        return $this->payments->checkoutUrlFor($order->buyer, $order->payment_reference, route('payment.return'));
+        $returnUrl = $request->input('return_url');
+        $redirectUrl = $this->frontendRedirect->allowed(is_string($returnUrl) ? $returnUrl : null) ?? route('payment.return');
+
+        return $this->payments->checkoutUrlFor($order->buyer, $order->payment_reference, $redirectUrl);
     }
 
     public function index(Request $request)
@@ -83,7 +89,7 @@ class OrderController extends Controller
 
         return response()->json([
             'data' => $order,
-            'payment_url' => $this->paymentUrlFor($order),
+            'payment_url' => $this->paymentUrlFor($order, $request),
         ]);
     }
 
@@ -102,7 +108,7 @@ class OrderController extends Controller
             abort(422, 'La pasarela de pagos no está configurada todavía.');
         }
 
-        $url = $this->paymentUrlFor($order);
+        $url = $this->paymentUrlFor($order, $request);
 
         if (! $url) {
             abort(422, 'Este pedido ya fue pagado o ya no se puede pagar.');
@@ -211,7 +217,7 @@ class OrderController extends Controller
         return response()->json([
             'message' => 'Compra realizada correctamente.',
             'data' => $order,
-            'payment_url' => $this->paymentUrlFor($order),
+            'payment_url' => $this->paymentUrlFor($order, $request),
         ], 201);
     }
 
@@ -336,7 +342,7 @@ class OrderController extends Controller
         });
 
         // La URL cobra el total de todo el carrito (referencia compartida).
-        $paymentUrl = $orders->isNotEmpty() ? $this->paymentUrlFor($orders->first()) : null;
+        $paymentUrl = $orders->isNotEmpty() ? $this->paymentUrlFor($orders->first(), $request) : null;
 
         return response()->json([
             'message' => 'Compra realizada correctamente.',

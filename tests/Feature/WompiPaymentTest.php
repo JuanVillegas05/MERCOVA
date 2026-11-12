@@ -107,6 +107,32 @@ class WompiPaymentTest extends TestCase
         $this->assertSame('15000000', $this->wompiCheckoutParameters($retry->json('payment_url'))['amount-in-cents']);
     }
 
+    public function test_order_payment_links_return_to_the_frontend_only_when_the_url_is_allowed(): void
+    {
+        $this->configureWompi();
+        config(['mercova.frontend_url' => 'https://app.mercova.test']);
+        $customer = User::factory()->create();
+        $product = $this->createProduct(User::factory()->create(['role' => 'seller']), stock: 5);
+
+        $allowed = $this->actingAs($customer, 'sanctum')->postJson('/api/orders', [
+            'product_id' => $product->id,
+            'quantity' => 1,
+            'return_url' => 'https://app.mercova.test/pago/resultado',
+        ])->assertCreated();
+        $foreign = $this->actingAs($customer, 'sanctum')->postJson('/api/orders', [
+            'product_id' => $product->id,
+            'quantity' => 1,
+            'return_url' => 'https://evil.test/robar',
+        ])->assertCreated();
+        $retry = $this->actingAs($customer, 'sanctum')
+            ->getJson('/api/orders/'.$allowed->json('data.id').'/payment?return_url='.urlencode('https://app.mercova.test/pago/resultado'))
+            ->assertOk();
+
+        $this->assertSame('https://app.mercova.test/pago/resultado', $this->wompiCheckoutParameters($allowed->json('payment_url'))['redirect-url']);
+        $this->assertSame(route('payment.return'), $this->wompiCheckoutParameters($foreign->json('payment_url'))['redirect-url']);
+        $this->assertSame('https://app.mercova.test/pago/resultado', $this->wompiCheckoutParameters($retry->json('payment_url'))['redirect-url']);
+    }
+
     public function test_purchase_has_no_payment_url_when_wompi_is_not_configured(): void
     {
         Http::preventStrayRequests();
