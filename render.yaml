@@ -17,6 +17,8 @@ envVarGroups:
         value: info
       - key: DB_CONNECTION
         value: mysql
+      - key: MYSQL_ATTR_SSL_CA
+        value: /etc/ssl/certs/ca-certificates.crt
       - key: SESSION_DRIVER
         value: database
       - key: CACHE_STORE
@@ -60,8 +62,6 @@ services:
       - key: DB_USERNAME
         sync: false
       - key: DB_PASSWORD
-        sync: false
-      - key: MYSQL_ATTR_SSL_CA
         sync: false
       - key: MAIL_USERNAME
         sync: false

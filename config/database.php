@@ -49,7 +49,7 @@ return [
             'url' => env('DB_URL'),
             'host' => env('DB_HOST', '127.0.0.1'),
             'port' => env('DB_PORT', '3306'),
-            'database' => env('DB_DATABASE', 'laravel'),
+            'database' => env('DB_DATABASE', 'mercova'),
             'username' => env('DB_USERNAME', 'root'),
             'password' => env('DB_PASSWORD', ''),
             'unix_socket' => env('DB_SOCKET', ''),
@@ -59,10 +59,12 @@ return [
             'prefix_indexes' => true,
             'strict' => true,
             'engine' => null,
-            'options' => [
-                PDO::MYSQL_ATTR_SSL_CA => '/etc/ssl/certs/ca-certificates.crt',
-                PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => false,
-            ],
+            // TiDB Cloud rechaza conexiones sin TLS. Si MYSQL_ATTR_SSL_CA no
+            // está definida (o quedó vacía en Render) se usa el bundle de CAs
+            // del sistema de la imagen Docker (Debian).
+            'options' => extension_loaded('pdo_mysql') ? [
+                Mysql::ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA') ?: '/etc/ssl/certs/ca-certificates.crt',
+            ] : [],
         ],
 
         'mariadb' => [
