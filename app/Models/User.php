@@ -25,6 +25,14 @@ class User extends Authenticatable
     /** @use HasFactory<UserFactory> */
     use HasApiTokens, HasFactory, Notifiable, SoftDeletes;
 
+    /**
+     * Columnas que se pueden mostrar de un usuario en respuestas públicas
+     * (vendedor de un producto, dueño de un emprendimiento, autor de una
+     * reseña). Nunca incluye email, teléfono ni datos de OAuth.
+     * Uso: ->with('seller:'.User::PUBLIC_PROFILE_COLUMNS)
+     */
+    public const PUBLIC_PROFILE_COLUMNS = 'id,name,bio,avatar_url,is_verified';
+
     protected $fillable = [
         'name',
         'email',

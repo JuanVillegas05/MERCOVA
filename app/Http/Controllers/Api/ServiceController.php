@@ -22,7 +22,7 @@ class ServiceController extends Controller
 
     public function index(Request $request)
     {
-        $query = Service::query()->with(['category', 'seller'])->where('status', 'active');
+        $query = Service::query()->with(['category', 'seller:'.User::PUBLIC_PROFILE_COLUMNS])->where('status', 'active');
 
         if ($request->filled('category_id')) {
             $query->where('category_id', $request->category_id);
@@ -44,7 +44,7 @@ class ServiceController extends Controller
     public function show(Service $service)
     {
         return response()->json([
-            'data' => $service->load(['category', 'seller']),
+            'data' => $service->load(['category', 'seller:'.User::PUBLIC_PROFILE_COLUMNS]),
         ]);
     }
 

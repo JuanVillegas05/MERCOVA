@@ -7,13 +7,14 @@ use App\Models\Order;
 use App\Models\Product;
 use App\Models\Rental;
 use App\Models\Review;
+use App\Models\User;
 use Illuminate\Http\Request;
 
 class ReviewController extends Controller
 {
     public function index(Product $product)
     {
-        $reviews = $product->reviews()->with('reviewer')->latest()->get();
+        $reviews = $product->reviews()->with('reviewer:'.User::PUBLIC_PROFILE_COLUMNS)->latest()->get();
 
         return response()->json([
             'data' => $reviews,

@@ -41,6 +41,46 @@ class MarketplaceApiTest extends TestCase
             ->assertJsonPath('data.data.0.title', 'Teclado Mecánico');
     }
 
+    public function test_public_product_endpoints_do_not_expose_seller_private_data(): void
+    {
+        $category = Category::create([
+            'name' => 'Tecnología',
+            'slug' => 'tecnologia',
+            'description' => 'Productos tecnológicos',
+        ]);
+
+        $seller = User::factory()->create([
+            'role' => 'seller',
+            'name' => 'Vendedora Pública',
+            'phone' => '+573001112233',
+        ]);
+
+        Product::create([
+            'seller_id' => $seller->id,
+            'category_id' => $category->id,
+            'title' => 'Monitor 27',
+            'slug' => 'monitor-27',
+            'description' => 'Monitor para oficina.',
+            'price' => 900,
+            'transaction_type' => 'sale',
+            'stock' => 2,
+            'condition' => 'Nuevo',
+            'status' => 'active',
+        ]);
+
+        foreach (['/api/products' => 'data.data.0.seller', '/api/products/monitor-27' => 'data.seller'] as $url => $sellerPath) {
+            $response = $this->getJson($url)->assertOk();
+
+            $response->assertJsonPath("$sellerPath.name", 'Vendedora Pública');
+            $this->assertSame(
+                ['avatar_url', 'bio', 'id', 'is_verified', 'name'],
+                collect(array_keys($response->json($sellerPath)))->sort()->values()->all(),
+                "$url expone campos privados del vendedor",
+            );
+            $response->assertDontSee($seller->email)->assertDontSee('+573001112233');
+        }
+    }
+
     public function test_customer_can_buy_product_after_login(): void
     {
         $category = Category::create([

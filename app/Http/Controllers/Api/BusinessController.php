@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Models\MembershipPlan;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -15,7 +16,7 @@ class BusinessController extends Controller
     public function index()
     {
         $businesses = Business::query()
-            ->with(['plan', 'owner'])
+            ->with(['plan', 'owner:'.User::PUBLIC_PROFILE_COLUMNS])
             ->where('status', 'active')
             ->latest()
             ->get();
@@ -28,7 +29,7 @@ class BusinessController extends Controller
         return response()->json([
             'data' => $business->load([
                 'plan',
-                'owner',
+                'owner:'.User::PUBLIC_PROFILE_COLUMNS,
                 'products' => fn ($q) => $q->where('status', 'active'),
                 'services' => fn ($q) => $q->where('status', 'active'),
             ]),

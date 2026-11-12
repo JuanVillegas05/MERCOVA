@@ -46,7 +46,7 @@ class ProductController extends Controller
     public function index(Request $request)
     {
         $query = Product::query()
-            ->with(['category', 'seller'])
+            ->with(['category', 'seller:'.User::PUBLIC_PROFILE_COLUMNS])
             ->withAvg('reviews', 'rating')
             ->withCount('reviews')
             ->where('status', 'active');
@@ -95,7 +95,7 @@ class ProductController extends Controller
 
     public function show(Request $request, Product $product)
     {
-        $product->load(['category', 'seller', 'business']);
+        $product->load(['category', 'seller:'.User::PUBLIC_PROFILE_COLUMNS, 'business']);
         $product->loadAvg('reviews', 'rating');
         $product->loadCount('reviews');
         $this->markFavorited($request, collect([$product]));
