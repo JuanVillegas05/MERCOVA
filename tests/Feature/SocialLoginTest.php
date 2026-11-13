@@ -52,7 +52,8 @@ class SocialLoginTest extends TestCase
 
         $exchange->assertOk()
             ->assertJsonPath('user.id', $user->id)
-            ->assertJsonPath('subscription.plan.id', $freePlan->id);
+            ->assertJsonPath('subscription.plan.id', $freePlan->id)
+            ->assertJsonPath('is_new_user', true);
         $this->assertSame($user->id, PersonalAccessToken::findToken($exchange->json('token'))->tokenable_id);
     }
 
@@ -115,8 +116,11 @@ class SocialLoginTest extends TestCase
         $existing = User::factory()->create(['email' => 'ya-existe@gmail.com']);
         $this->fakeProvider('google', $this->fakeSocialiteUser('google-456', 'ya-existe@gmail.com', 'Ya Existe'));
 
-        $this->get(route('social.callback', 'google'));
+        $location = $this->get(route('social.callback', 'google'))->headers->get('Location');
 
+        $this->postJson('/api/auth/social/exchange', ['code' => $this->codeFrom($location)])
+            ->assertOk()
+            ->assertJsonPath('is_new_user', false);
         $this->assertSame(1, User::where('email', 'ya-existe@gmail.com')->count());
         $existing->refresh();
         $this->assertSame('google', $existing->oauth_provider);

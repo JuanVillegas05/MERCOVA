@@ -113,13 +113,15 @@ class AuthController extends Controller
             'code' => ['required', 'string', 'size:64'],
         ]);
 
-        $user = $loginCodes->redeem($validated['code']);
+        $redeemed = $loginCodes->redeem($validated['code']);
 
-        if (! $user) {
+        if (! $redeemed) {
             return response()->json([
                 'message' => 'El enlace de inicio de sesión no es válido o expiró. Intenta de nuevo.',
             ], 422);
         }
+
+        $user = $redeemed['user'];
 
         if (! $user->is_active) {
             return response()->json([
@@ -132,6 +134,7 @@ class AuthController extends Controller
             'token' => $user->createToken('mercova')->plainTextToken,
             'user' => $user,
             'subscription' => $this->subscriptions->summaryFor($user),
+            'is_new_user' => $redeemed['is_new_user'],
         ]);
     }
 

@@ -18,24 +18,39 @@ class SocialLoginCodes
 {
     public const TTL_SECONDS = 120;
 
-    public function issue(User $user): string
+    /**
+     * $isNewUser viaja con el código para que el frontend sepa si debe
+     * mostrar el letrero de bienvenida (cuenta recién creada) o no.
+     */
+    public function issue(User $user, bool $isNewUser = false): string
     {
         $code = Str::random(64);
 
-        Cache::put($this->cacheKey($code), $user->id, self::TTL_SECONDS);
+        Cache::put($this->cacheKey($code), [
+            'user_id' => $user->id,
+            'is_new_user' => $isNewUser,
+        ], self::TTL_SECONDS);
 
         return $code;
     }
 
     /**
-     * Devuelve el usuario dueño del código y lo invalida; null si el código
-     * no existe, ya se usó o expiró.
+     * Devuelve el usuario dueño del código (y si la cuenta se acaba de crear)
+     * y lo invalida; null si el código no existe, ya se usó o expiró.
+     *
+     * @return array{user: User, is_new_user: bool}|null
      */
-    public function redeem(string $code): ?User
+    public function redeem(string $code): ?array
     {
-        $userId = Cache::pull($this->cacheKey($code));
+        $payload = Cache::pull($this->cacheKey($code));
 
-        return $userId ? User::find($userId) : null;
+        if (! is_array($payload)) {
+            return null;
+        }
+
+        $user = User::find($payload['user_id']);
+
+        return $user ? ['user' => $user, 'is_new_user' => (bool) $payload['is_new_user']] : null;
     }
 
     /**

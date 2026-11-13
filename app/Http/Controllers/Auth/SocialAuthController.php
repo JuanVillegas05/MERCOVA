@@ -136,7 +136,7 @@ class SocialAuthController extends Controller
             $user->sendWelcomeEmail();
         }
 
-        $code = $this->loginCodes->issue($user);
+        $code = $this->loginCodes->issue($user, $isNewUser);
 
         $target = $redirectUri
             ? $this->appendQuery($redirectUri, ['code' => $code])

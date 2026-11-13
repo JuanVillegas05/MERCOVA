@@ -1,6 +1,7 @@
 import { renderNav, bindLogout } from './lib/auth.js';
 import { refreshCartBadge } from './lib/cart.js';
 import { initNotificationBell } from './lib/notifications.js';
+import { showPendingWelcome } from './lib/welcome.js';
 import { initHome } from './pages/home.js';
 import { initLogin } from './pages/login.js';
 import { initRegister } from './pages/register.js';
@@ -60,5 +61,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const init = pageInitializers[page];
     if (init) {
         init();
+    }
+
+    if (user) {
+        showPendingWelcome();
     }
 });

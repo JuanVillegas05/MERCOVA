@@ -1,5 +1,6 @@
 import { register } from '../lib/auth.js';
 import { toast } from '../lib/toast.js';
+import { queueWelcome } from '../lib/welcome.js';
 
 export function initRegister() {
     const form = document.getElementById('register-form');
@@ -24,7 +25,7 @@ export function initRegister() {
                 role,
             });
 
-            toast('Cuenta creada con éxito. ¡Bienvenido a Mercova!', 'success');
+            queueWelcome(formData.get('name'), role);
             window.location.href = role === 'seller' ? '/panel' : '/marketplace';
         } catch (error) {
             toast(error.message, 'error');
