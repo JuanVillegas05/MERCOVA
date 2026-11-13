@@ -54,6 +54,19 @@ class ImageUploadTest extends TestCase
         $this->assertStringContainsString('/storage/listings/', $response->json('url'));
     }
 
+    public function test_production_refuses_to_store_images_on_the_ephemeral_disk_without_cloudinary(): void
+    {
+        $this->app['env'] = 'production';
+        Storage::fake('public');
+        Http::preventStrayRequests();
+
+        $this->actingAs(User::factory()->create(), 'sanctum')
+            ->post('/api/uploads/image', ['image' => UploadedFile::fake()->image('foto.png')], ['Accept' => 'application/json'])
+            ->assertServiceUnavailable();
+
+        $this->assertCount(0, Storage::disk('public')->allFiles());
+    }
+
     public function test_upload_rejects_files_that_are_not_images(): void
     {
         config(['services.cloudinary.url' => 'cloudinary://123456:api-secret@demo-cloud']);

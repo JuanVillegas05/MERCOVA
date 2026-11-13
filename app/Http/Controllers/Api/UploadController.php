@@ -37,6 +37,13 @@ class UploadController extends Controller
         $file = $request->file($fileKey);
 
         if (! $this->cloudinary->enabled()) {
+            // En producción el disco del servidor se borra en cada despliegue
+            // o reinicio: guardar ahí deja productos con la imagen rota.
+            if (app()->isProduction()) {
+                report(new \RuntimeException('Falta CLOUDINARY_URL: no se pueden guardar imágenes en producción.'));
+                abort(503, 'La subida de imágenes no está disponible en este momento. Intenta de nuevo más tarde.');
+            }
+
             $path = $file->store('listings', 'public');
 
             return response()->json(['url' => Storage::disk('public')->url($path)], 201);

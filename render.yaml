@@ -17,8 +17,6 @@ envVarGroups:
         value: info
       - key: DB_CONNECTION
         value: mysql
-      - key: MYSQL_ATTR_SSL_CA
-        value: /etc/ssl/certs/ca-certificates.crt
       - key: SESSION_DRIVER
         value: database
       - key: CACHE_STORE
@@ -27,14 +25,10 @@ envVarGroups:
         value: sync
       - key: FILESYSTEM_DISK
         value: local
+      # Render (plan free) bloquea los puertos SMTP salientes: el correo sale
+      # por la API HTTP de Brevo (App\Mail\Transport\BrevoTransport).
       - key: MAIL_MAILER
-        value: smtp
-      - key: MAIL_SCHEME
-        value: smtp
-      - key: MAIL_HOST
-        value: smtp-relay.brevo.com
-      - key: MAIL_PORT
-        value: "587"
+        value: brevo
       - key: MAIL_FROM_NAME
         value: Mercova
 
@@ -47,6 +41,9 @@ services:
     region: oregon
     branch: principal
     healthCheckPath: /up
+    # Migra y luego arranca con el script de la imagen (mercova-web), que
+    # pone Apache en el $PORT de Render, corre optimize y ajusta permisos.
+    startCommand: "php artisan migrate --force && mercova-web"
     envVars:
       - fromGroup: mercova-config
       - key: APP_KEY
@@ -63,9 +60,13 @@ services:
         sync: false
       - key: DB_PASSWORD
         sync: false
-      - key: MAIL_USERNAME
+      - key: MYSQL_ATTR_SSL_CA
         sync: false
-      - key: MAIL_PASSWORD
+      - key: BREVO_API_KEY
+        sync: false
+      # Imágenes de productos/servicios. Obligatorio: el disco de Render se
+      # borra en cada despliegue. cloudinary://{api_key}:{api_secret}@{cloud_name}
+      - key: CLOUDINARY_URL
         sync: false
       - key: MAIL_FROM_ADDRESS
         sync: false
